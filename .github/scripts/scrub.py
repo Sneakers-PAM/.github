@@ -6,17 +6,31 @@
 
 Without --base the whole history reachable from --head is scanned.
 
-`identifiers` scans every non-merge commit in the range: the lines each commit
-adds, the printable strings in the binary files it adds or changes, the paths
-it touches, its message, and its author and committer, plus
-the PR title and body from the PR_TITLE and PR_BODY environment variables.
-It flags private addresses, emails, home paths and host names that could
-identify a private deployment. Patterns are generic on purpose: no term list
-is read from anywhere.
+`identifiers` reads, for the range:
+  - every non-merge commit's own patch (so a leak added and later removed is
+    still caught), plus the added lines of the net diff `base...head` once,
+    which covers what merge commits add;
+  - the paths those diffs touch;
+  - the message, author and committer of every commit, merges included;
+  - the PR title and body, from the PR_TITLE and PR_BODY environment variables.
+Diffs always run with --text, so .gitattributes can't hide a file. A file whose
+content has a NUL byte is binary: its ASCII, UTF-16LE and UTF-16BE string runs
+are scanned instead of its lines. Compressed content (zip, docx, jar, gz, PNG
+zTXt and the like) is not unpacked; scrub 2 covers it.
 
-Allowed: any line containing `scrub:allow`, any file under a `docs/examples/`
-folder, RFC 5737 and RFC 3849 documentation ranges, example.* domains, GitHub
-noreply addresses and the public domains below (plus --allow-domain).
+It flags private addresses (private-ip), emails (email), home paths
+(home-path) and host names (fqdn) that could identify a private deployment.
+Patterns are generic on purpose: no term list is read from anywhere.
+
+Allowed:
+  - `scrub:allow=<class>[,<class>]` on a line of a file allows those classes on
+    that line. It's never honoured in commit messages, author lines, paths or
+    PR text, and a bare `scrub:allow` allows nothing;
+  - private-ip only, in files under the top-level `docs/examples/`;
+  - RFC 5737 and RFC 3849 documentation ranges (never matched), example.*
+    domains, GitHub noreply addresses and the public domains below (plus
+    --allow-domain).
+Every honoured allow is printed as a warning.
 
 Exit status: 0 clean, 1 findings, 2 usage or git error.
 """
@@ -28,7 +42,8 @@ import subprocess
 import sys
 from dataclasses import dataclass
 
-ALLOW_MARKER = "scrub:allow"
+CLASSES = ("private-ip", "email", "home-path", "fqdn")
+ALLOW_MARKER = re.compile(r"scrub:allow=([a-z-]+(?:,[a-z-]+)*)")
 
 _OCT = r"(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)"
 PRIVATE_IPV4 = re.compile(
@@ -45,9 +60,9 @@ EMAIL_ALLOWED_DOMAINS = {"users.noreply.github.com"}
 EMAIL_ALLOWED_ADDRESSES = {"noreply@github.com"}
 
 HOME_PATHS = [
-    re.compile(r"(?<![\w.~$/-])/home/([A-Za-z0-9._-]+)"),  # scrub:allow
-    re.compile(r"(?<![\w.~$/-])/Users/([A-Za-z0-9._-]+)"),  # scrub:allow
-    re.compile(r"(?<![\w.~$/-])/code/([A-Za-z0-9._-]+)/"),  # scrub:allow
+    re.compile(r"(?<![\w.~$/-])/home/([A-Za-z0-9._-]+)"),  # scrub:allow=home-path
+    re.compile(r"(?<![\w.~$/-])/Users/([A-Za-z0-9._-]+)"),  # scrub:allow=home-path
+    re.compile(r"(?<![\w.~$/-])/code/([A-Za-z0-9._-]+)/"),  # scrub:allow=home-path
     re.compile(r"\b[A-Za-z]:\\+Users\\+([^\\\s\"'<>]+)"),
 ]
 HOME_PATHS_BINARY = [re.compile(rx.pattern.replace(r"(?<![\w.~$/-])", "")) for rx in HOME_PATHS]
@@ -59,12 +74,12 @@ GENERIC_ACCOUNTS = {"runner", "runneradmin", "nonroot", "user", "username", "exa
 _TLDS = ("local|localdomain|lan|corp|internal|intranet|home|priv|private|invalid|test|int"
          "|com|net|org|io|dev|app|ai|co|cloud|edu|gov|mil|info|biz|me|us|uk|ca|de|eu|fr"
          "|nl|au|jp|tech|online|site|xyz|nyc")
-FQDN_PATTERNS = [
-    re.compile(rf"(?<![\w.@-])((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+(?:{_TLDS}))(?![\w-]|\.\w|\()"),
-    re.compile(rf"(?<![\w.@-])((?:[A-Z0-9](?:[A-Z0-9-]*[A-Z0-9])?\.)+(?:{_TLDS.upper()}))(?![\w-]|\.\w|\()"),
-]
-# Two-label matches that start with one of these, or with a single letter, are
-# code (this.app, req.app, logger.info, o.app), not host names.
+_HOST = rf"(?<![\w.@-])((?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+(?:{_TLDS}))"
+FQDN = re.compile(_HOST + r"(?![\w-]|\.\w|\()", re.I)
+FQDN_BINARY = re.compile(_HOST, re.I)
+# Two-label matches are code, not host names, when they start with a single
+# letter or one of these (this.app, req.app, logger.info, o.app), or look like
+# a Go exported selector (time.Local, big.Int).
 CODE_RECEIVERS = {"this", "self", "req", "res", "ctx", "app", "cfg", "conf", "config",
                   "opts", "options", "props", "state", "window", "document", "module",
                   "exports", "process", "logger", "log", "console", "os", "sys", "err",
@@ -83,7 +98,7 @@ PUBLIC_DOMAINS = {
     "fonts.gstatic.com", "unpkg.com", "cdn.jsdelivr.net", "cluster.local",
 }
 
-DOCS_EXAMPLES = re.compile(r"(?:^|/)docs/examples/")
+DOCS_EXAMPLES = "docs/examples/"
 SIGNOFF = re.compile(r"^Signed-off-by: \S.* <[^<>\s]+@[^<>\s]+>\s*$", re.M)
 
 
@@ -94,10 +109,19 @@ class Finding:
     where: str = ""
     file: str = ""
     line: int = 0
+    allowed_by: str = ""
 
 
-def path_allowed(path):
-    return bool(DOCS_EXAMPLES.search(path))
+def docs_example_path(path):
+    return path.startswith(DOCS_EXAMPLES)
+
+
+def is_code_selector(labels):
+    if len(labels) != 2:
+        return False
+    first, last = labels
+    return (len(first) == 1 or first.lower() in CODE_RECEIVERS
+            or (first.islower() and last.istitle()))
 
 
 class Scanner:
@@ -116,17 +140,27 @@ class Scanner:
                     or f"{local}@{domain}".lower() in EMAIL_ALLOWED_ADDRESSES
                     or (local == "git" and self.domain_allowed(domain)))
 
-    def line(self, text, binary=False):
-        """Findings in one line of text.
+    def line(self, text, binary=False, honor_allow=True, docs_example=False):
+        """Findings in one line of text; honoured allows come back with allowed_by set.
 
-        binary=True is for printable runs pulled from a binary file. There, a
+        binary=True is for string runs pulled from a binary file. There, a
         neighbouring byte can glue onto a match, so home paths drop their
-        left-boundary check, emails are retried with one or two glued bytes
-        trimmed from either end, and host names are skipped (random bytes
-        produce too many of them).
+        left-boundary check, host names drop their right-boundary check, and
+        emails are retried with one or two glued bytes trimmed from either end.
         """
-        if ALLOW_MARKER in text:
-            return []
+        found = self._find(text, binary)
+        allowed = set()
+        if honor_allow:
+            for m in ALLOW_MARKER.finditer(text):
+                allowed.update(c for c in m.group(1).split(",") if c in CLASSES)
+        for f in found:
+            if f.cls in allowed:
+                f.allowed_by = f"scrub:allow={f.cls}"
+            elif docs_example and f.cls == "private-ip":
+                f.allowed_by = DOCS_EXAMPLES
+        return found
+
+    def _find(self, text, binary):
         found = []
         for m in PRIVATE_IPV4.finditer(text):
             found.append(Finding("private-ip", m.group(0)))
@@ -143,23 +177,21 @@ class Scanner:
             for m in rx.finditer(text):
                 if m.group(1) not in GENERIC_ACCOUNTS:
                     found.append(Finding("home-path", m.group(0)))
-        if binary:
-            return found
-        for rx in FQDN_PATTERNS:
-            for m in rx.finditer(text):
-                host = m.group(1)
-                labels = host.split(".")
-                if len(labels) == 2 and (len(labels[0]) == 1 or labels[0].lower() in CODE_RECEIVERS):
-                    continue
-                if not self.domain_allowed(host):
-                    found.append(Finding("fqdn", host))
+        for m in (FQDN_BINARY if binary else FQDN).finditer(text):
+            host = m.group(1)
+            if is_code_selector(host.split(".")):
+                continue
+            if not self.domain_allowed(host):
+                found.append(Finding("fqdn", host))
         return found
 
 
-def git_bytes(*args):
+def git_bytes(*args, check=True):
     proc = subprocess.run(["git", "-c", "core.quotePath=false", *args],
                           capture_output=True)
     if proc.returncode != 0:
+        if not check:
+            return None
         sys.stderr.write(proc.stderr.decode("utf-8", "replace"))
         sys.exit(2)
     return proc.stdout
@@ -169,20 +201,27 @@ def git(*args):
     return git_bytes(*args).decode("utf-8", "replace")
 
 
-PRINTABLE_RUN = re.compile(rb"[\x20-\x7e]{6,}")
+ASCII_RUN = re.compile(rb"[\x20-\x7e]{6,}")
+UTF16LE_RUN = re.compile(rb"(?:[\x20-\x7e]\x00){6,}")
+UTF16BE_RUN = re.compile(rb"(?:\x00[\x20-\x7e]){6,}")
 
 
-def binary_paths(sha):
-    out = git("show", "--format=", "--numstat", "--no-renames", "--diff-filter=d", "-z", sha)
-    for entry in out.split("\x00"):
-        parts = entry.split("\t", 2)
-        if len(parts) == 3 and parts[0].strip() == "-" and parts[1] == "-":
-            yield parts[2]
+def string_runs(data):
+    """ASCII, UTF-16LE and UTF-16BE string runs, like strings -a, -el and -eb."""
+    for m in ASCII_RUN.finditer(data):
+        yield m.group(0).decode("ascii")
+    for m in UTF16LE_RUN.finditer(data):
+        yield m.group(0)[0::2].decode("ascii")
+    for m in UTF16BE_RUN.finditer(data):
+        yield m.group(0)[1::2].decode("ascii")
 
 
-def commits(base, head):
+def commits(base, head, merges=False):
     spec = f"{base}..{head}" if base else head
-    return git("rev-list", "--no-merges", "--reverse", spec).split()
+    args = ["rev-list", "--reverse", spec]
+    if not merges:
+        args.insert(1, "--no-merges")
+    return git(*args).split()
 
 
 def _strip_prefix(path):
@@ -192,68 +231,70 @@ def _strip_prefix(path):
     return path[2:] if path[:2] in ("a/", "b/") else path
 
 
-def scan_commit(scanner, sha):
-    short = sha[:12]
-    out = []
+DIFF_OPTS = ("--text", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames",
+             "--unified=0")
 
-    def add(findings, where, file="", line=0):
-        for f in findings:
-            f.where, f.file, f.line = where, file, line
-            out.append(f)
 
-    meta = git("show", "-s", "--format=%an%x00%ae%x00%cn%x00%ce%x00%B", sha).split("\x00", 4)
-    an, ae, cn, ce, body = (meta + [""] * 5)[:5]
-    add(scanner.line(f"{an} <{ae}>"), f"commit {short} author")
-    add(scanner.line(f"{cn} <{ce}>"), f"commit {short} committer")
-    for n, text in enumerate(body.splitlines(), 1):
-        add(scanner.line(text), f"commit {short} commit message:{n}")
+class Collector:
+    """Collects findings, dropping repeats of the same class and match in a file."""
 
-    patch = git("show", "--format=", "--no-color", "--no-ext-diff", "--no-textconv",
-                "--unified=0", sha)
-    path, in_hunk, lineno, seen_paths = None, False, 0, set()
-    for raw in patch.splitlines():
-        if raw.startswith("diff --git "):
-            path, in_hunk = None, False
-        elif raw.startswith("@@"):
-            in_hunk = True
-            m = re.match(r"@@ -\S+ \+(\d+)", raw)
-            lineno = int(m.group(1)) if m else 0
-        elif not in_hunk:
-            if raw.startswith("+++ "):
-                path = None if raw[4:].strip() == "/dev/null" else _strip_prefix(raw[4:])
-            elif raw.startswith("rename to "):
-                path = raw[len("rename to "):].strip().strip('"')
-            else:
+    def __init__(self, scanner):
+        self.scanner = scanner
+        self.findings = []
+        self.seen = set()
+
+    def add(self, text, where, file="", line=0, **kw):
+        for f in self.scanner.line(text, **kw):
+            key = (file or where, f.cls, f.match, f.allowed_by)
+            if key in self.seen:
                 continue
-            if path and path not in seen_paths and not path_allowed(path):
-                seen_paths.add(path)
-                add(scanner.line(path), f"{path} (path, commit {short})", path)
-        elif raw.startswith("+"):
-            if path and not path_allowed(path):
-                add(scanner.line(raw[1:]), f"{path}:{lineno} (commit {short})", path, lineno)
-            lineno += 1
+            self.seen.add(key)
+            f.where, f.file, f.line = where, file, line
+            self.findings.append(f)
 
-    # Compiled files and images can carry build paths and host names.
-    for bpath in binary_paths(sha):
-        if path_allowed(bpath):
-            continue
-        data = git_bytes("cat-file", "blob", f"{sha}:{bpath}")
-        for run in PRINTABLE_RUN.findall(data):
-            add(scanner.line(run.decode("ascii"), binary=True), f"{bpath} (binary, commit {short})", bpath)
-    return out
+    def patch(self, patch, blob_rev, label):
+        """Scan the added lines and paths of a --text patch whose new side is blob_rev."""
+        path, in_hunk, lineno, binary = None, False, 0, False
+        for raw in patch.splitlines():
+            if raw.startswith("diff --git "):
+                path, in_hunk, binary = None, False, False
+            elif raw.startswith("@@") and path is not None:
+                in_hunk = True
+                m = re.match(r"@@ -\S+ \+(\d+)", raw)
+                lineno = int(m.group(1)) if m else 0
+            elif not in_hunk:
+                if raw.startswith("+++ ") and raw[4:].strip() != "/dev/null":
+                    path = _strip_prefix(raw[4:])
+                    docs = docs_example_path(path)
+                    self.add(path, f"{path} (path, {label})", path, honor_allow=False,
+                             docs_example=docs)
+                    data = git_bytes("cat-file", "blob", f"{blob_rev}:{path}", check=False)
+                    binary = data is not None and b"\x00" in data
+                    if binary:
+                        # Compiled files, images and UTF-16 text: scan their string runs.
+                        for run in string_runs(data):
+                            self.add(run, f"{path} (binary, {label})", path, binary=True,
+                                     honor_allow=False, docs_example=docs)
+            elif raw.startswith("+"):
+                if path and not binary:
+                    self.add(raw[1:], f"{path}:{lineno} ({label})", path, lineno,
+                             docs_example=docs_example_path(path))
+                lineno += 1
 
+    def message(self, sha):
+        short = sha[:12]
+        meta = git("show", "-s", "--format=%an%x00%ae%x00%cn%x00%ce%x00%B", sha).split("\x00", 4)
+        an, ae, cn, ce, body = (meta + [""] * 5)[:5]
+        self.add(f"{an} <{ae}>", f"commit {short} author", honor_allow=False)
+        self.add(f"{cn} <{ce}>", f"commit {short} committer", honor_allow=False)
+        for n, text in enumerate(body.splitlines(), 1):
+            self.add(text, f"commit {short} commit message:{n}", honor_allow=False)
 
-def scan_pr_text(scanner):
-    out = []
-    for text in os.environ.get("PR_TITLE", "").splitlines():
-        for f in scanner.line(text):
-            f.where = "PR title"
-            out.append(f)
-    for n, text in enumerate(os.environ.get("PR_BODY", "").splitlines(), 1):
-        for f in scanner.line(text):
-            f.where = f"PR body:{n}"
-            out.append(f)
-    return out
+    def pr_text(self):
+        for text in os.environ.get("PR_TITLE", "").splitlines():
+            self.add(text, "PR title", honor_allow=False)
+        for n, text in enumerate(os.environ.get("PR_BODY", "").splitlines(), 1):
+            self.add(text, f"PR body:{n}", honor_allow=False)
 
 
 def _escape(value):
@@ -266,31 +307,52 @@ def _escape_prop(value):
 
 def report(check, findings, describe):
     in_actions = os.environ.get("GITHUB_ACTIONS") == "true"
-    for f in findings:
+    open_ = [f for f in findings if not f.allowed_by]
+    allowed = [f for f in findings if f.allowed_by]
+
+    def annotate(level, f, text):
+        params = [f"file={_escape_prop(f.file)}", f"line={f.line}"] if f.file and f.line else []
+        params.append(f"title=scrub {check}" + (" allowed" if level == "warning" else ""))
+        print(f"::{level} {','.join(params)}::{_escape(text)}")
+
+    for f in open_:
         print(describe(f))
         if in_actions:
-            params = [f"file={_escape_prop(f.file)}", f"line={f.line}"] if f.file and f.line else []
-            params.append(f"title=scrub {check}")
-            print(f"::error {','.join(params)}::{_escape(describe(f))}")
-    print(f"scrub {check}: {len(findings)} finding(s)")
+            annotate("error", f, describe(f))
+    for f in allowed:
+        text = f"allowed by {f.allowed_by}: {describe(f)}"
+        print(text)
+        if in_actions:
+            annotate("warning", f, text)
+    print(f"scrub {check}: {len(open_)} finding(s), {len(allowed)} allowed")
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
         with open(summary, "a") as fh:
-            fh.write(f"### scrub {check}: {len(findings)} finding(s)\n\n")
-            for f in findings:
+            fh.write(f"### scrub {check}: {len(open_)} finding(s), {len(allowed)} allowed\n\n")
+            for f in open_:
                 fh.write(f"- `{describe(f)}`\n")
+            if allowed:
+                fh.write("\nAllowed (warnings):\n\n")
+                for f in allowed:
+                    fh.write(f"- `{describe(f)}` allowed by `{f.allowed_by}`\n")
             fh.write("\n")
-    return 1 if findings else 0
+    return 1 if open_ else 0
 
 
 def cmd_identifiers(args):
     domains = [d for item in args.allow_domain for d in item.split()]
-    scanner = Scanner(domains)
-    findings = []
+    col = Collector(Scanner(domains))
     for sha in commits(args.base, args.head):
-        findings.extend(scan_commit(scanner, sha))
-    findings.extend(scan_pr_text(scanner))
-    return report("identifiers", findings, lambda f: f"{f.where}: {f.cls}: {f.match}")
+        patch = git("show", "--format=", *DIFF_OPTS, sha)
+        col.patch(patch, sha, f"commit {sha[:12]}")
+    # The net diff catches what merge commits add (conflict resolutions included).
+    base = args.base or git("hash-object", "-t", "tree", "/dev/null").strip()
+    spec = [f"{args.base}...{args.head}"] if args.base else [base, args.head]
+    col.patch(git("diff", *DIFF_OPTS, *spec), args.head, "net diff")
+    for sha in commits(args.base, args.head, merges=True):
+        col.message(sha)
+    col.pr_text()
+    return report("identifiers", col.findings, lambda f: f"{f.where}: {f.cls}: {f.match}")
 
 
 def cmd_dco(args):

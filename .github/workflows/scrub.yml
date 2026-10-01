@@ -10,12 +10,17 @@
 #
 # It runs three checks over the commits in the PR (or push) and fails if any
 # finds something:
-#   - gitleaks, pinned and checksum-verified, with the org .gitleaks.toml;
+#   - gitleaks, pinned and checksum-verified, with the org .gitleaks.toml
+#     (merge commits are read with --diff-merges=remerge, so what a merge
+#     adds beyond its parents is scanned too);
 #   - .github/scripts/scrub.py identifiers: private addresses, emails, home
-#     paths and host names in the added lines, paths, commit messages,
-#     authors, and the PR title and body;
-#   - .github/scripts/scrub.py dco: a Signed-off-by trailer on every commit.
+#     paths and host names in each commit's added lines and the net diff
+#     (always as text), binary string runs, paths, commit messages (merges
+#     included), authors, and the PR title and body;
+#   - .github/scripts/scrub.py dco: a Signed-off-by trailer on every non-merge
+#     commit.
 #
+# See .github/scripts/README.md for the allow markers and the limits.
 # The patterns are generic. This workflow never reads a term list, and takes
 # no secrets.
 name: scrub
@@ -118,7 +123,7 @@ jobs:
           gitleaks git . \
             --config "$TOOLS/.gitleaks.toml" \
             --gitleaks-ignore-path "$TOOLS" \
-            --log-opts="--no-merges ${BASE:+$BASE..}$HEAD_SHA" \
+            --log-opts="--diff-merges=remerge ${BASE:+$BASE..}$HEAD_SHA" \
             --redact --verbose --no-banner
 
       - name: Generic identifiers

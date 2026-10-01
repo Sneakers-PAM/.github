@@ -29,8 +29,12 @@ EMAIL_BAD = j("user@corp", ".invalid")
 HOST_BAD = j("build01", ".corp", ".invalid")
 
 
-def classes(text, allowed_domains=()):
-    return [f.cls for f in scrub.Scanner(allowed_domains).line(text)]
+def classes(text, allowed_domains=(), **kw):
+    return [f.cls for f in scrub.Scanner(allowed_domains).line(text, **kw) if not f.allowed_by]
+
+
+def allowed(text, **kw):
+    return [(f.cls, f.allowed_by) for f in scrub.Scanner().line(text, **kw) if f.allowed_by]
 
 
 class PrivateAddressTest(unittest.TestCase):
@@ -109,18 +113,41 @@ class FqdnTest(unittest.TestCase):
         self.assertEqual(classes(host), ["fqdn"])
         self.assertEqual(classes(host, [j("sneakers-pam", ".dev")]), [])
 
+    def test_mixed_case_hosts_flagged(self):
+        for text in (j("Dc01", ".Corp", ".Local"), j("https://Wiki", ".Acme-Corp", ".Com/x"),
+                     j("Corp", ".Local")):
+            self.assertEqual(classes(text), ["fqdn"], text)
+
+    def test_go_exported_selectors_pass(self):
+        for text in ("t := time.Local", "n := new(big.Int)", "k == reflect.Int"):
+            self.assertEqual(classes(text), [], text)
+
     def test_email_domain_not_double_reported(self):
         self.assertEqual(classes(EMAIL_BAD), ["email"])
 
 
 class AllowTest(unittest.TestCase):
-    def test_marker_allows_line(self):
-        self.assertEqual(classes("host = " + IP_10 + "  # scrub:allow"), [])
+    def test_marker_is_class_specific(self):
+        line = "host = " + IP_10 + " see " + HOST_BAD
+        self.assertEqual(classes(line + "  # scrub:allow=private-ip"), ["fqdn"])
+        self.assertEqual(allowed(line + "  # scrub:allow=private-ip"),
+                         [("private-ip", "scrub:allow=private-ip")])
+        self.assertEqual(classes(line + "  # scrub:allow=private-ip,fqdn"), [])
 
-    def test_docs_examples_path_allowed(self):
-        self.assertTrue(scrub.path_allowed("docs/examples/lab.md"))
-        self.assertTrue(scrub.path_allowed("svc/docs/examples/a/b.yaml"))
-        self.assertFalse(scrub.path_allowed("docs/install.md"))
+    def test_bare_marker_allows_nothing(self):
+        self.assertEqual(classes("host = " + IP_10 + "  # scrub:allow"), ["private-ip"])
+
+    def test_marker_ignored_when_not_honoured(self):
+        line = "host = " + IP_10 + "  # scrub:allow=private-ip"
+        self.assertEqual(classes(line, honor_allow=False), ["private-ip"])
+
+    def test_docs_examples_only_root_and_only_private_ip(self):
+        self.assertTrue(scrub.docs_example_path("docs/examples/lab.md"))
+        self.assertFalse(scrub.docs_example_path("svc/docs/examples/a/b.yaml"))
+        self.assertFalse(scrub.docs_example_path("docs/install.md"))
+        line = "host = " + IP_10 + " mail " + EMAIL_BAD
+        self.assertEqual(classes(line, docs_example=True), ["email"])
+        self.assertEqual(allowed(line, docs_example=True), [("private-ip", "docs/examples/")])
 
 
 def git(cwd, *args, env=None):
@@ -202,6 +229,80 @@ class EndToEndTest(unittest.TestCase):
         self.assertIn("x.bin (binary, commit", ids.stdout)
         self.assertIn("home-path", ids.stdout)
         self.assertIn("1 finding(s)", ids.stdout)
+
+    def test_gitattributes_cannot_hide_text(self):
+        self.commit(".gitattributes", "* -diff\n", "chore: attrs" + SIGNOFF)
+        self.commit("hosts.txt", "upstream " + HOST_BAD + "\n", "test: add" + SIGNOFF)
+        head = git(self.repo, "rev-parse", "HEAD")
+        ids = self.run_scrub("identifiers", "--base", self.base, "--head", head)
+        self.assertEqual(ids.returncode, 1, ids.stdout + ids.stderr)
+        self.assertIn("hosts.txt:1", ids.stdout)
+        self.assertIn("fqdn", ids.stdout)
+
+    def test_utf16_files_scanned(self):
+        text = "upstream " + HOST_BAD + "\nhost " + IP_10 + "\n"
+        for name, enc in (("le.txt", "utf-16-le"), ("be.txt", "utf-16-be"), ("bom.txt", "utf-16")):
+            with open(os.path.join(self.repo, name), "wb") as fh:
+                fh.write(text.encode(enc))
+        git(self.repo, "add", ".")
+        git(self.repo, "-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "test: add" + SIGNOFF)
+        head = git(self.repo, "rev-parse", "HEAD")
+        ids = self.run_scrub("identifiers", "--base", self.base, "--head", head)
+        self.assertEqual(ids.returncode, 1, ids.stdout + ids.stderr)
+        for name in ("le.txt", "be.txt", "bom.txt"):
+            lines = [x for x in ids.stdout.splitlines() if x.startswith(name)]
+            self.assertTrue(any("fqdn" in x for x in lines), (name, ids.stdout))
+            self.assertTrue(any("private-ip" in x for x in lines), (name, ids.stdout))
+
+    def test_marker_not_honoured_in_messages_or_pr_text(self):
+        marker = " scrub:allow=private-ip"
+        self.commit("a.txt", "clean\n", "fix: reach " + IP_10 + marker + SIGNOFF)
+        head = git(self.repo, "rev-parse", "HEAD")
+        ids = self.run_scrub("identifiers", "--base", self.base, "--head", head,
+                             env={"PR_TITLE": "fix: " + IP_172 + marker,
+                                  "PR_BODY": "see " + IP_192 + marker})
+        self.assertIn("commit message", ids.stdout)
+        self.assertIn("PR title", ids.stdout)
+        self.assertIn("PR body:1", ids.stdout)
+        self.assertIn("3 finding(s)", ids.stdout)
+
+    def test_honoured_allows_are_warnings(self):
+        self.commit("a.txt", "host = " + IP_10 + "  # scrub:allow=private-ip\n",
+                    "test: add" + SIGNOFF)
+        os.makedirs(os.path.join(self.repo, "docs", "examples"))
+        self.commit("docs/examples/lab.md", "lab " + IP_172 + "\n", "docs: add" + SIGNOFF)
+        head = git(self.repo, "rev-parse", "HEAD")
+        summary = os.path.join(self.repo, ".summary")
+        ids = self.run_scrub("identifiers", "--base", self.base, "--head", head,
+                             env={"GITHUB_ACTIONS": "true", "GITHUB_STEP_SUMMARY": summary})
+        self.assertEqual(ids.returncode, 0, ids.stdout + ids.stderr)
+        self.assertIn("::warning file=a.txt,line=1,", ids.stdout)
+        self.assertIn("::warning file=docs/examples/lab.md,line=1,", ids.stdout)
+        self.assertIn("0 finding(s), 2 allowed", ids.stdout)
+        with open(summary) as fh:
+            body = fh.read()
+        self.assertIn("allowed", body)
+        self.assertIn("scrub:allow=private-ip", body)
+        self.assertIn("docs/examples/", body)
+
+    def test_merge_commits_scanned(self):
+        git(self.repo, "switch", "-q", "-c", "topic")
+        self.commit("t.txt", "topic\n", "feat: topic" + SIGNOFF)
+        git(self.repo, "switch", "-q", "main")
+        self.commit("m.txt", "main\n", "feat: main" + SIGNOFF)
+        git(self.repo, "-c", "core.hooksPath=/dev/null", "merge", "-q", "--no-ff",
+            "--no-commit", "topic")
+        with open(os.path.join(self.repo, "evil.txt"), "w") as fh:
+            fh.write("host = " + IP_10 + "\n")
+        git(self.repo, "add", "evil.txt")
+        git(self.repo, "-c", "core.hooksPath=/dev/null", "commit", "-q",
+            "-m", "Merge topic via " + HOST_BAD + SIGNOFF)
+        head = git(self.repo, "rev-parse", "HEAD")
+        ids = self.run_scrub("identifiers", "--base", self.base, "--head", head)
+        self.assertEqual(ids.returncode, 1, ids.stdout + ids.stderr)
+        self.assertIn("evil.txt:1", ids.stdout)
+        self.assertIn("commit message", ids.stdout)
+        self.assertIn("2 finding(s)", ids.stdout)
 
     def test_leak_added_then_removed_is_still_flagged(self):
         self.commit("a.txt", "host = " + IP_10 + "\n", "test: add" + SIGNOFF)
