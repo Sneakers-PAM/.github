@@ -304,6 +304,35 @@ class EndToEndTest(unittest.TestCase):
         self.assertIn("commit message", ids.stdout)
         self.assertIn("2 finding(s)", ids.stdout)
 
+    def test_line_separators_cannot_hide_text(self):
+        for ch, name in (("\r", "cr"), ("\x0c", "ff"), ("\x85", "nel")):
+            with self.subTest(name):
+                fname = f"sep-{name}.txt"
+                with open(os.path.join(self.repo, fname), "w", encoding="utf-8", newline="") as fh:
+                    fh.write("ok line" + ch + "host " + HOST_BAD + ch + "addr " + IP_10 + "\n")
+                git(self.repo, "add", fname)
+                git(self.repo, "-c", "core.hooksPath=/dev/null", "commit", "-q",
+                    "-m", "test: add" + SIGNOFF)
+                head = git(self.repo, "rev-parse", "HEAD")
+                ids = self.run_scrub("identifiers", "--base", self.base, "--head", head)
+                lines = [x for x in ids.stdout.splitlines() if x.startswith(fname)]
+                self.assertTrue(any("fqdn" in x for x in lines), (name, ids.stdout))
+                self.assertTrue(any("private-ip" in x for x in lines), (name, ids.stdout))
+
+    def test_line_separators_cannot_hide_pr_or_message_text(self):
+        for ch, name in (("\r", "cr"), ("\x0c", "ff"), ("\x85", "nel")):
+            with self.subTest(name):
+                self.commit(f"m-{name}.txt", "clean\n",
+                            "fix: ok" + ch + "via " + HOST_BAD + SIGNOFF)
+                head = git(self.repo, "rev-parse", "HEAD")
+                ids = self.run_scrub("identifiers", "--base", f"{head}~1", "--head", head,
+                                     env={"PR_TITLE": "fix: ok" + ch + IP_172,
+                                          "PR_BODY": "fine" + ch + "see " + IP_192})
+                self.assertIn("commit message", ids.stdout, name)
+                self.assertIn("PR title", ids.stdout, name)
+                self.assertIn("PR body:1", ids.stdout, name)
+                self.assertIn("3 finding(s)", ids.stdout, name)
+
     def test_leak_added_then_removed_is_still_flagged(self):
         self.commit("a.txt", "host = " + IP_10 + "\n", "test: add" + SIGNOFF)
         self.commit("a.txt", "host = 192.0.2.1\n", "test: fix" + SIGNOFF)

@@ -224,6 +224,13 @@ def commits(base, head, merges=False):
     return git(*args).split()
 
 
+def lines(text):
+    """Split on "\n" only. str.splitlines() also breaks on \r, \x0c, \x1c-\x1e,
+    \x85 and U+2028/2029, and the text after one of those on an added diff line
+    would then never be scanned."""
+    return text.split("\n")
+
+
 def _strip_prefix(path):
     path = path.strip()
     if path.startswith('"') and path.endswith('"'):
@@ -244,7 +251,8 @@ class Collector:
         self.seen = set()
 
     def add(self, text, where, file="", line=0, **kw):
-        for f in self.scanner.line(text, **kw):
+        # CRLF content (PR bodies from GitHub, Windows files): drop the line's own \r.
+        for f in self.scanner.line(text.removesuffix("\r"), **kw):
             key = (file or where, f.cls, f.match, f.allowed_by)
             if key in self.seen:
                 continue
@@ -255,7 +263,7 @@ class Collector:
     def patch(self, patch, blob_rev, label):
         """Scan the added lines and paths of a --text patch whose new side is blob_rev."""
         path, in_hunk, lineno, binary = None, False, 0, False
-        for raw in patch.splitlines():
+        for raw in lines(patch):
             if raw.startswith("diff --git "):
                 path, in_hunk, binary = None, False, False
             elif raw.startswith("@@") and path is not None:
@@ -287,13 +295,13 @@ class Collector:
         an, ae, cn, ce, body = (meta + [""] * 5)[:5]
         self.add(f"{an} <{ae}>", f"commit {short} author", honor_allow=False)
         self.add(f"{cn} <{ce}>", f"commit {short} committer", honor_allow=False)
-        for n, text in enumerate(body.splitlines(), 1):
+        for n, text in enumerate(lines(body.rstrip("\n")), 1):
             self.add(text, f"commit {short} commit message:{n}", honor_allow=False)
 
     def pr_text(self):
-        for text in os.environ.get("PR_TITLE", "").splitlines():
+        for text in lines(os.environ.get("PR_TITLE", "")):
             self.add(text, "PR title", honor_allow=False)
-        for n, text in enumerate(os.environ.get("PR_BODY", "").splitlines(), 1):
+        for n, text in enumerate(lines(os.environ.get("PR_BODY", "")), 1):
             self.add(text, f"PR body:{n}", honor_allow=False)
 
 
@@ -360,7 +368,7 @@ def cmd_dco(args):
     for sha in commits(args.base, args.head):
         body = git("show", "-s", "--format=%B", sha)
         if not SIGNOFF.search(body):
-            subject = body.splitlines()[0] if body.strip() else ""
+            subject = lines(body)[0].removesuffix("\r")
             findings.append(Finding("dco", subject, where=f"commit {sha[:12]}"))
     return report("dco", findings,
                   lambda f: f'{f.where} "{f.match}": no Signed-off-by trailer')
