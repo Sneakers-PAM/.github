@@ -1,0 +1,34 @@
+# Org-wide gitleaks config, used by .github/workflows/scrub.yml.
+# It keeps gitleaks' default rules and adds a few for what a PAM handles.
+title = "Sneakers-PAM gitleaks config"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "kubeconfig-embedded-key"
+description = "Kubeconfig with an embedded client key or token"
+regex = '''(?i)\b(client-key-data|token)\s*:\s*["']?([A-Za-z0-9+/=._-]{40,})["']?'''
+secretGroup = 2
+keywords = ["client-key-data", "token"]
+[[rules.allowlists]]
+description = "Placeholders and templated values"
+regexTarget = "line"
+regexes = ['''\{\{.*\}\}''', '''\$\{[A-Za-z_]+\}''', '''(?i)(redacted|changeme|placeholder|example)''']
+
+[[rules]]
+id = "htpasswd-bcrypt"
+description = "bcrypt password hash, as in htpasswd or seeded users"
+regex = '''\$2[aby]\$\d{2}\$[./A-Za-z0-9]{53}'''
+keywords = ["$2a$", "$2b$", "$2y$"]
+
+[[rules]]
+id = "basic-auth-url"
+description = "Credentials embedded in a URL"
+regex = '''(?i)\b[a-z][a-z0-9+.-]*://([^\s:/@"']+):([^\s:/@"']{3,})@[^\s/"']+'''
+secretGroup = 2
+keywords = ["://"]
+[[rules.allowlists]]
+description = "Placeholders"
+regexTarget = "secret"
+regexes = ['''(?i)^(password|pass|secret|changeme|redacted|x+|\*+|\$\{?[A-Za-z_]+\}?)$''']

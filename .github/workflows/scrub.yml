@@ -1,0 +1,152 @@
+# Scrub 1: the org's reusable leak guard. Each repo's `checks` job calls it:
+#
+#   jobs:
+#     checks:
+#       if: github.event.pull_request.draft != true
+#       uses: Sneakers-PAM/.github/.github/workflows/scrub.yml@main
+#
+# Callers should trigger on pull_request types [opened, synchronize, reopened,
+# edited, ready_for_review] so an edited PR title or body is scanned again.
+#
+# It runs three checks over the commits in the PR (or push) and fails if any
+# finds something:
+#   - gitleaks, pinned and checksum-verified, with the org .gitleaks.toml;
+#   - .github/scripts/scrub.py identifiers: private addresses, emails, home
+#     paths and host names in the added lines, paths, commit messages,
+#     authors, and the PR title and body;
+#   - .github/scripts/scrub.py dco: a Signed-off-by trailer on every commit.
+#
+# The patterns are generic. This workflow never reads a term list, and takes
+# no secrets.
+name: scrub
+
+on:
+  workflow_call:
+    inputs:
+      allowed-domains:
+        description: Extra domains the host-name check accepts (space-separated), such as the project's own domain.
+        type: string
+        default: ""
+      full-history:
+        description: Scan the whole history reachable from the head instead of the PR or push range.
+        type: boolean
+        default: false
+      tools-ref:
+        description: Ref of Sneakers-PAM/.github to take scrub.py and .gitleaks.toml from.
+        type: string
+        default: main
+
+permissions:
+  contents: read
+
+env:
+  GITLEAKS_VERSION: 8.30.1
+  GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+  TOOLS: .scrub-tools
+
+jobs:
+  scrub:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check out the scrub tools
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Sneakers-PAM/.github
+          ref: ${{ inputs.tools-ref }}
+          path: ${{ env.TOOLS }}
+          persist-credentials: false
+
+      - name: Resolve the scan range
+        id: range
+        env:
+          EVENT: ${{ github.event_name }}
+          FULL: ${{ inputs.full-history }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.event.after }}
+          MG_BASE: ${{ github.event.merge_group.base_sha }}
+          MG_HEAD: ${{ github.event.merge_group.head_sha }}
+        run: |
+          set -euo pipefail
+          case "$EVENT" in
+            pull_request|pull_request_target) base="$PR_BASE"; head="$PR_HEAD" ;;
+            merge_group) base="$MG_BASE"; head="$MG_HEAD" ;;
+            push) base="$PUSH_BEFORE"; head="$PUSH_AFTER" ;;
+            *) base=""; head="$GITHUB_SHA" ;;
+          esac
+          if [ "$FULL" = "true" ] || [ -z "${base//0/}" ] || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            base=""
+          fi
+          if [ -n "$base" ]; then echo "Scanning $base..$head"; else echo "Scanning the full history of $head"; fi
+          {
+            echo "base=$base"
+            echo "head=$head"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Install gitleaks
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/gitleaks"
+          mkdir -p "$dir"
+          cd "$dir"
+          url="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
+          tarball="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -fsSLO "$url/$tarball"
+          curl -fsSLO "$url/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+          echo "$GITLEAKS_SHA256  $tarball" | sha256sum -c -
+          grep -F "  $tarball" "gitleaks_${GITLEAKS_VERSION}_checksums.txt" | sha256sum -c -
+          tar -xzf "$tarball" gitleaks
+          echo "$dir" >> "$GITHUB_PATH"
+
+      - name: gitleaks
+        id: gitleaks
+        continue-on-error: true
+        env:
+          BASE: ${{ steps.range.outputs.base }}
+          HEAD_SHA: ${{ steps.range.outputs.head }}
+        run: |
+          set -euo pipefail
+          gitleaks version
+          gitleaks git . \
+            --config "$TOOLS/.gitleaks.toml" \
+            --gitleaks-ignore-path "$TOOLS" \
+            --log-opts="--no-merges ${BASE:+$BASE..}$HEAD_SHA" \
+            --redact --verbose --no-banner
+
+      - name: Generic identifiers
+        id: identifiers
+        continue-on-error: true
+        env:
+          BASE: ${{ steps.range.outputs.base }}
+          HEAD_SHA: ${{ steps.range.outputs.head }}
+          ALLOWED_DOMAINS: ${{ inputs.allowed-domains }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          python3 "$TOOLS/.github/scripts/scrub.py" identifiers \
+            --base "$BASE" --head "$HEAD_SHA" --allow-domain "$ALLOWED_DOMAINS"
+
+      - name: DCO sign-off
+        id: dco
+        continue-on-error: true
+        env:
+          BASE: ${{ steps.range.outputs.base }}
+          HEAD_SHA: ${{ steps.range.outputs.head }}
+        run: python3 "$TOOLS/.github/scripts/scrub.py" dco --base "$BASE" --head "$HEAD_SHA"
+
+      - name: Verdict
+        env:
+          GITLEAKS: ${{ steps.gitleaks.outcome }}
+          IDENTIFIERS: ${{ steps.identifiers.outcome }}
+          DCO: ${{ steps.dco.outcome }}
+        run: |
+          echo "gitleaks: $GITLEAKS, identifiers: $IDENTIFIERS, dco: $DCO"
+          [ "$GITLEAKS" = success ] && [ "$IDENTIFIERS" = success ] && [ "$DCO" = success ]
