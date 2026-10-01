@@ -1,0 +1,26 @@
+name: Task
+description: Maintenance, chores, or other work that isn't a feature or a bug.
+title: "chore(<scope>): <short description>"
+labels: ["task"]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What needs doing and why.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: What must be true for this to be done.
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Constraints, dependencies, or links to related issues.
+    validations:
+      required: false
