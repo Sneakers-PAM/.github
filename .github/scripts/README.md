@@ -34,8 +34,9 @@ Leave out `--base` to scan the whole history.
 - Markers are never honoured in commit messages, author lines, paths or PR text.
 - Files under the top-level `docs/examples/` may hold private addresses; every other check still
   applies there.
-- The RFC 5737 and RFC 3849 documentation ranges, example.* domains, GitHub noreply addresses and
-  the built-in public domains always pass. Callers add their own domain with the workflow's
+- The RFC 5737 and RFC 3849 documentation ranges, emails at example.com, example.org and
+  example.net (and their subdomains), host names under any example.* domain, GitHub noreply
+  addresses and the built-in public domains always pass. Callers add their own domain with the workflow's
   `allowed-domains` input.
 
 Every honoured allow is reported as a warning, both in the log and in the job summary.

@@ -58,6 +58,11 @@ class PrivateAddressTest(unittest.TestCase):
         for text in ("go 1.10.2", "release 10.1.2", "v10.1.2.3", "pkg@10.1.2"):
             self.assertEqual(classes(text), [], text)
 
+    def test_ipv4_after_letter_or_underscore_flagged(self):
+        for text in (j("node_10.1", ".2.3"), j("srv10.1", ".2.3"), j("db_192.168", ".7.8"),
+                     j("ip=x172.20", ".4.5")):
+            self.assertEqual(classes(text), ["private-ip"], text)
+
     def test_ula_ipv6_flagged_and_documentation_ipv6_passes(self):
         self.assertEqual(classes("addr " + j("fd12", ":3456:789a::1")), ["private-ip"])
         self.assertEqual(classes("addr 2001:db8::1"), [])
@@ -77,11 +82,27 @@ class EmailTest(unittest.TestCase):
             self.assertEqual(classes(text), [], text)
 
 
+class EmailExampleDomainTest(unittest.TestCase):
+    def test_only_the_three_example_domains_allowed(self):
+        for text in (j("a@example", ".io"), j("b@example", ".dev"), j("c@mail", ".example", ".co")):
+            self.assertEqual(classes(text), ["email"], text)
+
+
 class HomePathTest(unittest.TestCase):
     def test_home_paths_flagged(self):
         for text in (j("/ho", "me/jdoe/src"), j("/Us", "ers/jdoe/Desktop"),
                      j("/co", "de/jdoe/project"), j("C:\\Us", "ers\\jdoe\\x")):
             self.assertEqual(classes(text), ["home-path"], text)
+
+    def test_code_path_without_trailing_slash_flagged(self):
+        for text in (j("cd /co", "de/jdoe"), j("root=/co", "de/jdoe;"), j("/co", "de/jdoe")):
+            self.assertEqual(classes(text), ["home-path"], text)
+
+    def test_file_urls_flagged(self):
+        for text in (j("file:///ho", "me/jdoe/x"), j("see file:///Us", "ers/jdoe"),
+                     j("file://localhost/ho", "me/jdoe/x")):
+            self.assertEqual(classes(text), ["home-path"], text)
+        self.assertEqual(classes(j("file:///ho", "me/runner/work")), [])
 
     def test_generic_accounts_pass(self):
         for text in (j("/ho", "me/runner/work"), j("/ho", "me/nonroot"),

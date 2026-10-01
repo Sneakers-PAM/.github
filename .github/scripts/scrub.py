@@ -21,8 +21,11 @@ binary: its ASCII, UTF-16LE and UTF-16BE string runs are scanned instead of its
 lines. Compressed content (zip, docx, jar, gz, PNG
 zTXt and the like) is not unpacked; scrub 2 covers it.
 
-It flags private addresses (private-ip), emails (email), home paths
-(home-path) and host names (fqdn) that could identify a private deployment.
+It flags private addresses (private-ip, also when glued to a name such as
+node_10.x; a lone v prefix reads as a version), emails (email), home paths
+(home-path: /home/<name>, /Users/<name>, /code/<name>, C:\\Users\\<name> and
+file:// URLs to them) and host names (fqdn) that could identify a private
+deployment.
 Patterns are generic on purpose: no term list is read from anywhere.
 
 Allowed:
@@ -30,9 +33,10 @@ Allowed:
     that line. It's never honoured in commit messages, author lines, paths or
     PR text, and a bare `scrub:allow` allows nothing;
   - private-ip only, in files under the top-level `docs/examples/`;
-  - RFC 5737 and RFC 3849 documentation ranges (never matched), example.*
-    domains, GitHub noreply addresses and the public domains below (plus
-    --allow-domain).
+  - RFC 5737 and RFC 3849 documentation ranges (never matched); emails at
+    example.com, example.org and example.net (and their subdomains) only; host
+    names under any example.* domain; GitHub noreply addresses and the public
+    domains below (plus --allow-domain).
 Every honoured allow is printed as a warning.
 
 Exit status: 0 clean, 1 findings, 2 usage or git error.
@@ -50,7 +54,7 @@ ALLOW_MARKER = re.compile(r"scrub:allow=([a-z-]+(?:,[a-z-]+)*)")
 
 _OCT = r"(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)"
 PRIVATE_IPV4 = re.compile(
-    r"(?<![\w.])(?:"
+    r"(?<![\d.])(?<!(?<![A-Za-z0-9_])[vV])(?:"
     rf"10(?:\.{_OCT}){{3}}"
     rf"|172\.(?:1[6-9]|2\d|3[01])(?:\.{_OCT}){{1,2}}"
     rf"|192\.168(?:\.{_OCT}){{1,2}}"
@@ -60,12 +64,14 @@ ULA_IPV6 = re.compile(r"(?<![\w:])f[cd][0-9a-f]{2}(?::[0-9a-f]{0,4}){2,7}(?![\w:
 
 EMAIL = re.compile(r"(?<![\w.%+-])([A-Za-z0-9._%+-]+)@((?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,})(?![\w-])")
 EMAIL_ALLOWED_DOMAINS = {"users.noreply.github.com"}
+EMAIL_EXAMPLE_DOMAIN = re.compile(r"(?:^|\.)example\.(?:com|org|net)$")
 EMAIL_ALLOWED_ADDRESSES = {"noreply@github.com"}
 
 HOME_PATHS = [
     re.compile(r"(?<![\w.~$/-])/home/([A-Za-z0-9._-]+)"),  # scrub:allow=home-path
     re.compile(r"(?<![\w.~$/-])/Users/([A-Za-z0-9._-]+)"),  # scrub:allow=home-path
-    re.compile(r"(?<![\w.~$/-])/code/([A-Za-z0-9._-]+)/"),  # scrub:allow=home-path
+    re.compile(r"(?<![\w.~$/-])/code/([A-Za-z0-9._-]+)"),  # scrub:allow=home-path
+    re.compile(r"\bfile://[^/\s]*/(?:home|Users|code)/([A-Za-z0-9._-]+)", re.I),
     re.compile(r"\b[A-Za-z]:\\+Users\\+([^\\\s\"'<>]+)"),
 ]
 HOME_PATHS_BINARY = [re.compile(rx.pattern.replace(r"(?<![\w.~$/-])", "")) for rx in HOME_PATHS]
@@ -139,7 +145,7 @@ class Scanner:
 
     def email_allowed(self, local, domain):
         domain = domain.lower()
-        return bool(EXAMPLE_DOMAIN.search(domain) or domain in EMAIL_ALLOWED_DOMAINS
+        return bool(EMAIL_EXAMPLE_DOMAIN.search(domain) or domain in EMAIL_ALLOWED_DOMAINS
                     or f"{local}@{domain}".lower() in EMAIL_ALLOWED_ADDRESSES
                     or (local == "git" and self.domain_allowed(domain)))
 
