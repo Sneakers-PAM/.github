@@ -21,7 +21,9 @@ Leave out `--base` to scan the whole history.
   - every commit message, author and committer, merges included;
   - the PR title and body.
 
-  Diffs always run with `--text`, so `.gitattributes` can't hide a file. A file whose content has
+  Files are listed with NUL-separated plumbing and read by blob id, so an odd path (a tab, quote,
+  backslash or newline in the name) can't hide its content; a blob that can't be read fails the
+  run (exit 2). Diffs always run with `--text`, so `.gitattributes` can't hide a file. A file whose content has
   a NUL byte is treated as binary, and its ASCII, UTF-16LE and UTF-16BE string runs are scanned.
 - **dco** requires `Signed-off-by: Name <email>` on every non-merge commit.
 

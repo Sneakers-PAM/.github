@@ -254,6 +254,30 @@ class EndToEndTest(unittest.TestCase):
             self.assertTrue(any("fqdn" in x for x in lines), (name, ids.stdout))
             self.assertTrue(any("private-ip" in x for x in lines), (name, ids.stdout))
 
+    def test_paths_git_quotes_are_scanned(self):
+        names = ("we\tird.txt", 'q"uo\\te.txt', "new\nline.txt")
+        with open(os.path.join(self.repo, names[0]), "wb") as fh:
+            fh.write(("upstream " + HOST_BAD + "\n").encode("utf-16"))
+        for name in names[1:]:
+            with open(os.path.join(self.repo, name), "w") as fh:
+                fh.write("upstream " + HOST_BAD + "\n")
+        git(self.repo, "add", "-A")
+        git(self.repo, "-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "test: add" + SIGNOFF)
+        head = git(self.repo, "rev-parse", "HEAD")
+        ids = self.run_scrub("identifiers", "--base", self.base, "--head", head)
+        self.assertEqual(ids.returncode, 1, ids.stdout + ids.stderr)
+        self.assertIn("we\\tird.txt (binary, commit", ids.stdout)
+        self.assertIn('q"uo\\\\te.txt:1 (commit', ids.stdout)
+        self.assertIn("new\\nline.txt:1 (commit", ids.stdout)
+
+    def test_unreadable_blob_is_an_error(self):
+        self.commit("a.txt", "harmless\n", "test: add" + SIGNOFF)
+        blob = git(self.repo, "rev-parse", "HEAD:a.txt")
+        os.remove(os.path.join(self.repo, ".git", "objects", blob[:2], blob[2:]))
+        head = git(self.repo, "rev-parse", "HEAD")
+        ids = self.run_scrub("identifiers", "--base", self.base, "--head", head)
+        self.assertEqual(ids.returncode, 2, ids.stdout + ids.stderr)
+
     def test_marker_not_honoured_in_messages_or_pr_text(self):
         marker = " scrub:allow=private-ip"
         self.commit("a.txt", "clean\n", "fix: reach " + IP_10 + marker + SIGNOFF)

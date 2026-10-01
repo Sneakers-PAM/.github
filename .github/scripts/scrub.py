@@ -13,9 +13,12 @@ Without --base the whole history reachable from --head is scanned.
   - the paths those diffs touch;
   - the message, author and committer of every commit, merges included;
   - the PR title and body, from the PR_TITLE and PR_BODY environment variables.
-Diffs always run with --text, so .gitattributes can't hide a file. A file whose
-content has a NUL byte is binary: its ASCII, UTF-16LE and UTF-16BE string runs
-are scanned instead of its lines. Compressed content (zip, docx, jar, gz, PNG
+Files are listed with NUL-separated plumbing and read by blob id, so no path
+(tab, quote, backslash or newline in the name) can hide its content, and a
+blob that can't be read is an error (exit 2). Diffs always run with --text, so
+.gitattributes can't hide a file. A file whose content has a NUL byte is
+binary: its ASCII, UTF-16LE and UTF-16BE string runs are scanned instead of its
+lines. Compressed content (zip, docx, jar, gz, PNG
 zTXt and the like) is not unpacked; scrub 2 covers it.
 
 It flags private addresses (private-ip), emails (email), home paths
@@ -231,15 +234,43 @@ def lines(text):
     return text.split("\n")
 
 
-def _strip_prefix(path):
-    path = path.strip()
-    if path.startswith('"') and path.endswith('"'):
-        path = path[1:-1]
-    return path[2:] if path[:2] in ("a/", "b/") else path
+def show_path(path):
+    """A path as it's safe to print on one line."""
+    return (path.replace("\\", "\\\\").replace("\n", "\\n").replace("\r", "\\r")
+            .replace("\t", "\\t"))
 
 
-DIFF_OPTS = ("--text", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames",
-             "--unified=0")
+DIFF_OPTS = ("--text", "--no-color", "--no-ext-diff", "--no-textconv", "--unified=0")
+
+
+def changed_files(base, head):
+    """(old mode, new mode, old blob, new blob, status, path) per file, from -z plumbing."""
+    parts = git_bytes("diff-tree", "-r", "-z", "--no-renames", "--raw", base, head).split(b"\0")
+    out = []
+    for i in range(0, len(parts) - 1, 2):
+        old_mode, new_mode, old_sha, new_sha, status = parts[i].decode("ascii")[1:].split()
+        out.append((old_mode, new_mode, old_sha, new_sha, status,
+                    parts[i + 1].decode("utf-8", "replace")))
+    return out
+
+
+def added_lines(old_mode, old_sha, new_sha, data):
+    """(line number, text) of every line the new blob adds over the old one."""
+    if old_mode in ("000000", "160000"):
+        text = lines(data.decode("utf-8", "replace"))
+        if text and text[-1] == "":
+            text.pop()
+        return list(enumerate(text, 1))
+    out, in_hunk, lineno = [], False, 0
+    for raw in lines(git("diff", *DIFF_OPTS, old_sha, new_sha)):
+        if raw.startswith("@@"):
+            in_hunk = True
+            m = re.match(r"@@ -\S+ \+(\d+)", raw)
+            lineno = int(m.group(1)) if m else 0
+        elif in_hunk and raw.startswith("+"):
+            out.append((lineno, raw[1:]))
+            lineno += 1
+    return out
 
 
 class Collector:
@@ -260,34 +291,29 @@ class Collector:
             f.where, f.file, f.line = where, file, line
             self.findings.append(f)
 
-    def patch(self, patch, blob_rev, label):
-        """Scan the added lines and paths of a --text patch whose new side is blob_rev."""
-        path, in_hunk, lineno, binary = None, False, 0, False
-        for raw in lines(patch):
-            if raw.startswith("diff --git "):
-                path, in_hunk, binary = None, False, False
-            elif raw.startswith("@@") and path is not None:
-                in_hunk = True
-                m = re.match(r"@@ -\S+ \+(\d+)", raw)
-                lineno = int(m.group(1)) if m else 0
-            elif not in_hunk:
-                if raw.startswith("+++ ") and raw[4:].strip() != "/dev/null":
-                    path = _strip_prefix(raw[4:])
-                    docs = docs_example_path(path)
-                    self.add(path, f"{path} (path, {label})", path, honor_allow=False,
-                             docs_example=docs)
-                    data = git_bytes("cat-file", "blob", f"{blob_rev}:{path}", check=False)
-                    binary = data is not None and b"\x00" in data
-                    if binary:
-                        # Compiled files, images and UTF-16 text: scan their string runs.
-                        for run in string_runs(data):
-                            self.add(run, f"{path} (binary, {label})", path, binary=True,
-                                     honor_allow=False, docs_example=docs)
-            elif raw.startswith("+"):
-                if path and not binary:
-                    self.add(raw[1:], f"{path}:{lineno} ({label})", path, lineno,
-                             docs_example=docs_example_path(path))
-                lineno += 1
+    def changes(self, base, head, label):
+        """Scan the paths and added content of every file changed from base to head."""
+        for old_mode, new_mode, old_sha, new_sha, status, path in changed_files(base, head):
+            if status == "D":
+                continue
+            shown, docs = show_path(path), docs_example_path(path)
+            self.add(path, f"{shown} (path, {label})", path, honor_allow=False,
+                     docs_example=docs)
+            if new_mode == "160000":
+                continue
+            data = git_bytes("cat-file", "blob", new_sha, check=False)
+            if data is None:
+                sys.stderr.write(f"scrub: can't read the content of {shown} ({label})\n")
+                sys.exit(2)
+            if b"\x00" in data:
+                # Compiled files, images and UTF-16 text: scan their string runs.
+                for run in string_runs(data):
+                    self.add(run, f"{shown} (binary, {label})", path, binary=True,
+                             honor_allow=False, docs_example=docs)
+                continue
+            for lineno, text in added_lines(old_mode, old_sha, new_sha, data):
+                self.add(text, f"{shown}:{lineno} ({label})", path, lineno,
+                         docs_example=docs)
 
     def message(self, sha):
         short = sha[:12]
@@ -350,13 +376,13 @@ def report(check, findings, describe):
 def cmd_identifiers(args):
     domains = [d for item in args.allow_domain for d in item.split()]
     col = Collector(Scanner(domains))
+    empty_tree = git("hash-object", "-t", "tree", "/dev/null").strip()
     for sha in commits(args.base, args.head):
-        patch = git("show", "--format=", *DIFF_OPTS, sha)
-        col.patch(patch, sha, f"commit {sha[:12]}")
+        parents = git("rev-list", "--parents", "-n1", sha).split()[1:]
+        col.changes(parents[0] if parents else empty_tree, sha, f"commit {sha[:12]}")
     # The net diff catches what merge commits add (conflict resolutions included).
-    base = args.base or git("hash-object", "-t", "tree", "/dev/null").strip()
-    spec = [f"{args.base}...{args.head}"] if args.base else [base, args.head]
-    col.patch(git("diff", *DIFF_OPTS, *spec), args.head, "net diff")
+    base = git("merge-base", args.base, args.head).strip() if args.base else empty_tree
+    col.changes(base, args.head, "net diff")
     for sha in commits(args.base, args.head, merges=True):
         col.message(sha)
     col.pr_text()
