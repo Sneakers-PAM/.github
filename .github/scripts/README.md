@@ -47,3 +47,32 @@ Compressed content isn't unpacked: zip, docx/xlsx, jar, gz and tar.gz, PNG zTXt/
 streams and the like. Scrub 2, the independent reviewer pass, reviews those files.
 Scrub 1 is a pattern check; it doesn't catch names, short host names, ticket keys or codenames.
 Scrub 2 does that too.
+
+# Proto sync
+
+`proto-sync.sh` holds the checks behind `.github/workflows/proto-sync.yml`. A service never imports
+another service's Go module: it pins each callee's commit in `proto-refs.env`
+(`SNEAKERS_<NAME>_REF=<commit>`, for `Sneakers-PAM/sneakers-<name>`), and its
+`scripts/proto-generate.sh` fetches the callee's `proto/` at that commit and generates the client
+stubs into its own `gen/`.
+
+## Run it locally
+
+From the root of the calling repo, with `buf` on the `PATH`:
+
+```bash
+bash <this repo>/.github/scripts/proto-sync.sh check
+bash <this repo>/.github/scripts/proto-sync.sh refresh
+```
+
+## What it checks
+
+- **check** (on a PR) fails when a pin isn't on the owner's `main`, or when `buf breaking` finds
+  that the owner's `main` breaks the protos at the pin. It only warns when `main`'s `proto/` has
+  moved past the pin without a break, so an owner's additive change doesn't turn every caller's
+  open PRs red.
+- **refresh** (on the schedule) points every stale pin at the owner's `main`: a pin is stale when
+  it isn't on `main` (a squash merge leaves the PR head off it) or when `proto/` differs. The
+  workflow then reruns `scripts/proto-generate.sh` and opens or updates one PR from
+  `chore/proto-refs`. CI doesn't start on a PR the workflow token opens, so a maintainer closes and
+  reopens it. The org setting "Allow GitHub Actions to create and approve pull requests" must be on.
