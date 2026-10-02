@@ -1,0 +1,194 @@
+# Proto sync: keeps the callee proto pins of a Sneakers-PAM service honest.
+#
+# A service never imports another service's Go module. It pins each callee's
+# commit in proto-refs.env (one SNEAKERS_<NAME>_REF=<commit> line per callee,
+# for Sneakers-PAM/sneakers-<name>), and its scripts/proto-generate.sh fetches
+# the callee's proto/ at that commit and generates the client stubs into gen/.
+# The stubs are committed; the fetched protos never are.
+#
+# Each repo's checks.yml calls it with one job per path, so only the scheduled
+# path holds write permissions:
+#
+#   on:
+#     pull_request: ...
+#     schedule:
+#       - cron: "23 10 * * 1-5"
+#     workflow_dispatch:
+#   jobs:
+#     proto-sync:
+#       if: github.event_name == 'pull_request' && github.event.pull_request.draft != true
+#       permissions:
+#         contents: read
+#       uses: Sneakers-PAM/.github/.github/workflows/proto-sync.yml@main
+#     proto-refresh:
+#       if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+#       permissions:
+#         contents: write
+#         pull-requests: write
+#       uses: Sneakers-PAM/.github/.github/workflows/proto-sync.yml@main
+#
+# On pull_request (job `check`), for each pin it:
+#   - fails if the pinned commit isn't on the owner's main;
+#   - runs buf breaking of the owner's main against the pinned commit, and
+#     fails on a break: the stubs here no longer match what the owner serves;
+#   - warns when main's proto/ has moved past the pin without a break. That
+#     isn't a failure, so an owner's additive change never turns every
+#     caller's open PRs red; the scheduled run bumps the pin instead.
+# On schedule or workflow_dispatch (job `refresh`), it points every stale pin
+# at the owner's main, reruns scripts/proto-generate.sh and opens (or updates)
+# one PR from the branch chore/proto-refs. Workflows don't start on a PR the
+# workflow token opens: a maintainer closes and reopens it to run CI. The org
+# setting "Allow GitHub Actions to create and approve pull requests" must be on.
+#
+# The logic lives in .github/scripts/proto-sync.sh. It takes no secrets beyond
+# the default GITHUB_TOKEN.
+name: proto-sync
+
+on:
+  workflow_call:
+    inputs:
+      tools-ref:
+        description: Ref of Sneakers-PAM/.github to take proto-sync.sh from.
+        type: string
+        default: main
+      protoc-gen-go-version:
+        description: protoc-gen-go version the refresh regenerates with; match the repo's Build & Test.
+        type: string
+        default: v1.36.11
+      protoc-gen-go-grpc-version:
+        description: protoc-gen-go-grpc version the refresh regenerates with; match the repo's Build & Test.
+        type: string
+        default: v1.6.2
+
+env:
+  BUF_VERSION: 1.70.0
+  BUF_SHA256: e2bbcdd324da09c16a15963dc2dae0525c955c05dc118223cf732f4f7509c5e6
+  TOOLS: .proto-sync-tools
+  BRANCH: chore/proto-refs
+
+jobs:
+  check:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check out the proto-sync tools
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Sneakers-PAM/.github
+          ref: ${{ inputs.tools-ref }}
+          path: ${{ env.TOOLS }}
+          persist-credentials: false
+
+      - name: Install buf
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/buf"
+          mkdir -p "$dir"
+          curl -fsSL -o "$dir/buf" \
+            "https://github.com/bufbuild/buf/releases/download/v${BUF_VERSION}/buf-Linux-x86_64"
+          echo "$BUF_SHA256  $dir/buf" | sha256sum -c -
+          chmod +x "$dir/buf"
+          echo "$dir" >> "$GITHUB_PATH"
+
+      - name: Check the pins
+        run: bash "$TOOLS/.github/scripts/proto-sync.sh" check
+
+  # No permissions block: the job takes the caller job's, which grants writes
+  # on the scheduled path only.
+  refresh:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check out the proto-sync tools
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Sneakers-PAM/.github
+          ref: ${{ inputs.tools-ref }}
+          path: ${{ env.TOOLS }}
+          persist-credentials: false
+
+      - name: Install buf
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/buf"
+          mkdir -p "$dir"
+          curl -fsSL -o "$dir/buf" \
+            "https://github.com/bufbuild/buf/releases/download/v${BUF_VERSION}/buf-Linux-x86_64"
+          echo "$BUF_SHA256  $dir/buf" | sha256sum -c -
+          chmod +x "$dir/buf"
+          echo "$dir" >> "$GITHUB_PATH"
+
+      - name: Bump stale pins
+        id: bump
+        env:
+          PROTO_SYNC_CHANGES: ${{ runner.temp }}/proto-sync-changes.md
+        run: |
+          set -euo pipefail
+          : > "$PROTO_SYNC_CHANGES"
+          bash "$TOOLS/.github/scripts/proto-sync.sh" refresh
+          if [ -s "$PROTO_SYNC_CHANGES" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Every pin is current."
+          fi
+
+      - name: Set up Go
+        if: steps.bump.outputs.changed == 'true'
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      # go install checks each module against the Go checksum database.
+      - name: Regenerate the stubs
+        if: steps.bump.outputs.changed == 'true'
+        env:
+          PROTOC_GEN_GO_VERSION: ${{ inputs.protoc-gen-go-version }}
+          PROTOC_GEN_GO_GRPC_VERSION: ${{ inputs.protoc-gen-go-grpc-version }}
+        run: |
+          set -euo pipefail
+          go install "google.golang.org/protobuf/cmd/protoc-gen-go@${PROTOC_GEN_GO_VERSION}"
+          go install "google.golang.org/grpc/cmd/protoc-gen-go-grpc@${PROTOC_GEN_GO_GRPC_VERSION}"
+          PATH="$(go env GOPATH)/bin:$PATH" scripts/proto-generate.sh
+
+      - name: Open or update the PR
+        if: steps.bump.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHANGES: ${{ runner.temp }}/proto-sync-changes.md
+          BASE: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$BRANCH"
+          git add -- proto-refs.env gen
+          title="chore(deps): bump the callee proto pins"
+          git commit -q -s -m "$title"
+          git push -f origin "HEAD:refs/heads/$BRANCH"
+          body="$RUNNER_TEMP/proto-sync-body.md"
+          {
+            echo "Points the callee proto pins at their owners' main and regenerates the stubs."
+            echo
+            cat "$CHANGES"
+            echo
+            echo "CI doesn't start on a PR the workflow token opens: close and reopen this PR to run it."
+          } > "$body"
+          if [ -n "$(gh pr list --head "$BRANCH" --state open --json number --jq '.[].number')" ]; then
+            gh pr edit "$BRANCH" --title "$title" --body-file "$body"
+          elif ! gh pr create --base "$BASE" --head "$BRANCH" --title "$title" --body-file "$body" --label dependencies; then
+            echo "::error::Could not open the PR. Pushed $BRANCH; open it by hand: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/compare/$BASE...$BRANCH"
+            exit 1
+          fi
