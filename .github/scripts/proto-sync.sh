@@ -41,11 +41,28 @@ trap 'rm -rf "$work"' EXIT
 
 annotate() { echo "::$1 file=$refs::$2"; }
 
+# scope_to_proto <worktree>: replace the checked-out buf.yaml with one that
+# only names this repo's own proto/ module. The callee's real buf.yaml can
+# name its own callees' modules (.protos/sneakers-<x>), fetched by its
+# scripts/proto-generate.sh and never present in this bare checkout; buf
+# breaking would otherwise fail to resolve them before comparing anything.
+scope_to_proto() {
+  cat >"$1/buf.yaml" <<'EOF'
+version: v2
+modules:
+  - path: proto
+breaking:
+  use: [FILE]
+EOF
+}
+
 # breaks <repo dir> <pin> <main>: buf breaking of main's protos against the pin's.
 breaks() {
   local dir="$1" pin="$2" main="$3"
   git -C "$dir" worktree add -q --detach "$dir.pin" "$pin"
   git -C "$dir" worktree add -q --detach "$dir.main" "$main"
+  scope_to_proto "$dir.pin"
+  scope_to_proto "$dir.main"
   ! buf breaking "$dir.main" --against "$dir.pin"
 }
 
