@@ -61,11 +61,42 @@ stubs into its own `gen/`.
 From the root of the calling repo, with `buf` on the `PATH`:
 
 ```bash
+bash <this repo>/.github/scripts/pin-check.sh
+bash <this repo>/.github/scripts/gomod-guard.sh
 bash <this repo>/.github/scripts/proto-sync.sh check
 bash <this repo>/.github/scripts/proto-sync.sh refresh
 ```
 
+`pin-check.sh` needs `gh`, signed in or with `GH_TOKEN` set. The self-tests run from anywhere:
+
+```bash
+bash .github/scripts/pin-check_test.sh
+PIN_CHECK_LIVE=1 bash .github/scripts/pin-check_test.sh   # also against real Sneakers-PAM commits
+bash .github/scripts/gomod-guard_test.sh
+bash .github/scripts/proto-sync_test.sh
+```
+
 ## What it checks
+
+The `check` job (on a PR) runs two guards first, in every calling repo, with or without pins:
+
+- **pin-check.sh** fails when a `SNEAKERS_<NAME>_REF` pin isn't reachable from the owner's `main`,
+  asking GitHub's compare API (`repos/Sneakers-PAM/<repo>/compare/<pin>...main`). Status `ahead`
+  or `identical` passes; `behind`, `diverged` and a 404 (no such repo or commit) fail. A
+  squash-merged PR head still resolves on codeload until GitHub drops it, so a pin off `main`
+  works for a while and then breaks with no warning. Pin the owner's merge commit instead.
+- **gomod-guard.sh** fails when any `go.mod` below the root (hidden directories and `vendor/`
+  aside) has a `replace` directive, or requires a `github.com/Bugs5382/*` or
+  `github.com/Sneakers-PAM/*` module at a pseudo-version (`v0.0.0-<timestamp>-<commit>`,
+  `vX.Y.Z-0.<timestamp>-<commit>` and the pre-release form). Only tagged releases are committed.
+
+To build and test against a local checkout of a package, use a git-ignored `go.work` beside the
+service's `go.mod` instead (`go work init . ../go-<pkg>`, or `use . ../go-<pkg>` in the file).
+Every Go repo ignores `go.work` and `go.work.sum`. Local callee protos come from the
+`SNEAKERS_<SVC>_PROTO_DIR` overrides of the service's `scripts/proto-generate.sh`, never from an
+edited pin.
+
+Then, for each pin:
 
 - **check** (on a PR) fails when a pin isn't on the owner's `main`, or when `buf breaking` finds
   that the owner's `main` breaks the protos at the pin. It only warns when `main`'s `proto/` has
