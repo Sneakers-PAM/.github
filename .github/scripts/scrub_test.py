@@ -134,6 +134,19 @@ class FqdnTest(unittest.TestCase):
         self.assertEqual(classes(host), ["fqdn"])
         self.assertEqual(classes(host, [j("sneakers-pam", ".dev")]), [])
 
+    def test_org_domain_allowed_without_input(self):
+        for text in ("sneakers-pam.com", "https://docs.sneakers-pam.com/install",
+                     "Sneakers-PAM.com"):
+            self.assertEqual(classes(text), [], text)
+
+    def test_org_domain_look_alikes_flagged(self):
+        for text in (j("not", "sneakers-pam.com"), j("sneakers-pam.com", ".attacker", ".io"),
+                     j("sneakers-pam", ".co")):
+            self.assertEqual(classes(text), ["fqdn"], text)
+
+    def test_org_domain_emails_flagged(self):
+        self.assertEqual(classes(j("someone", "@sneakers-pam.com")), ["email"])
+
     def test_mixed_case_hosts_flagged(self):
         for text in (j("Dc01", ".Corp", ".Local"), j("https://Wiki", ".Acme-Corp", ".Com/x"),
                      j("Corp", ".Local")):

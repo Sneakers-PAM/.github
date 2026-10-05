@@ -67,8 +67,10 @@ can simply be removed.
   applies there.
 - The RFC 5737 and RFC 3849 documentation ranges, emails at example.com, example.org and
   example.net (and their subdomains), host names under any example.* domain, GitHub noreply
-  addresses and the built-in public domains always pass. Callers add their own domain with the workflow's
-  `allowed-domains` input.
+  addresses, the built-in public domains and the project's own domain, `sneakers-pam.com` (as a host
+  name, subdomains included; emails at it are still flagged), always pass. Callers add other domains
+  with the workflow's `allowed-domains` input. Placeholder hosts in code and tests stay on
+  `example.org`.
 
 Every honoured allow is reported as a warning, both in the log and in the job summary.
 

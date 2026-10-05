@@ -35,8 +35,9 @@ Allowed:
   - private-ip only, in files under the top-level `docs/examples/`;
   - RFC 5737 and RFC 3849 documentation ranges (never matched); emails at
     example.com, example.org and example.net (and their subdomains) only; host
-    names under any example.* domain; GitHub noreply addresses and the public
-    domains below (plus --allow-domain).
+    names under any example.* domain; GitHub noreply addresses, the public
+    domains below and the project's own domain, sneakers-pam.com, as host
+    names (plus --allow-domain).
 Every honoured allow is printed as a warning.
 
 Exit status: 0 clean, 1 findings, 2 usage or git error.
@@ -106,6 +107,9 @@ PUBLIC_DOMAINS = {
     "slsa.dev", "openssf.org", "bestpractices.dev", "fonts.googleapis.com",
     "fonts.gstatic.com", "unpkg.com", "cdn.jsdelivr.net", "cluster.local",
 }
+# The project's own domain, accepted as a host name (and its subdomains) in
+# every repo. Emails at it are still flagged.
+ORG_DOMAINS = {"sneakers-pam.com"}
 
 DOCS_EXAMPLES = "docs/examples/"
 SIGNOFF = re.compile(r"^Signed-off-by: \S.* <[^<>\s]+@[^<>\s]+>\s*$", re.M)
@@ -135,7 +139,8 @@ def is_code_selector(labels):
 
 class Scanner:
     def __init__(self, allowed_domains=()):
-        self.allowed = PUBLIC_DOMAINS | {d.lower().strip(".") for d in allowed_domains if d}
+        self.allowed = (PUBLIC_DOMAINS | ORG_DOMAINS
+                        | {d.lower().strip(".") for d in allowed_domains if d})
 
     def domain_allowed(self, host):
         host = host.lower().rstrip(".")

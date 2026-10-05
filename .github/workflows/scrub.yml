@@ -40,7 +40,7 @@ on:
   workflow_call:
     inputs:
       allowed-domains:
-        description: Extra domains the host-name check accepts (space-separated), such as the project's own domain.
+        description: Extra domains the host-name check accepts (space-separated), such as public module hosts. The project's own domain, sneakers-pam.com, is always accepted.
         type: string
         default: ""
       full-history:
