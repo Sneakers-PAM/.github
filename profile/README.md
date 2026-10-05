@@ -7,6 +7,8 @@ system: a vault for credentials, scoped secret delivery to the systems that need
 and an audit trail for every access, built as a set of small services rather than one
 monolith.
 
+🌍 **Project site:** [sneakers-pam.com](https://sneakers-pam.com)
+
 ## 🧩 Services
 
 - [sneakers-vault](https://github.com/Sneakers-PAM/sneakers-vault): secrets, versions, rotation, heartbeats, approvals, check-out and check-in, with their gRPC APIs.

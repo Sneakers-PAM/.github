@@ -1,32 +1,33 @@
 # Code of Conduct
 
-This project adopts the [Contributor Covenant](https://www.contributor-covenant.org/),
-version 2.1. Be respectful, assume good faith, and keep discussion constructive and
-technical.
+Sneakers-PAM follows the [CNCF Code of Conduct](https://github.com/cncf/foundation/blob/main/code-of-conduct.md),
+which builds on the [Contributor Covenant](https://www.contributor-covenant.org/). Be
+respectful, assume good faith, and keep discussion constructive and technical.
 
 ## Our standards
 
-Examples of behavior that contributes to a positive environment include using welcoming
+Examples of behaviour that contributes to a positive environment include using welcoming
 and inclusive language, respecting differing viewpoints and experiences, and accepting
 constructive criticism gracefully.
 
-Examples of unacceptable behavior include harassment, insulting or derogatory comments,
+Examples of unacceptable behaviour include harassment, insulting or derogatory comments,
 public or private harassment, and publishing others' private information without
 explicit permission.
 
-## Enforcement
+## Scope
 
-Maintainers are responsible for clarifying and enforcing the standards and will take
-appropriate, fair corrective action in response to any behavior they deem inappropriate,
-threatening, offensive, or harmful.
+This code applies in every Sneakers-PAM space: repositories, issues, pull requests,
+discussions, and any event or channel where someone represents the project.
 
 ## Reporting
 
-Report unacceptable behavior privately through this repository's **Security** tab ->
-**Report a vulnerability** (GitHub Security Advisories). Reports are handled
-confidentially by the maintainers.
+Report unacceptable behaviour privately through the affected repository's **Security**
+tab, then **Report a vulnerability** (GitHub private vulnerability reporting). Reports are
+handled confidentially by the maintainers. If a maintainer is involved, you can also
+report it to the CNCF as its Code of Conduct describes.
 
-## Attribution
+## Enforcement
 
-This Code of Conduct is adapted from the [Contributor Covenant](https://www.contributor-covenant.org/version/2/1/code_of_conduct/),
-version 2.1.
+Maintainers are responsible for clarifying and enforcing the standards, and will take
+appropriate, fair corrective action in response to any behaviour they deem
+inappropriate, threatening, offensive or harmful.

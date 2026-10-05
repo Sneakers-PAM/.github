@@ -9,6 +9,8 @@ No AI tells or emoji anywhere (enforced by hooks and CI).
 
 Closes #<issue>
 
+<!-- Use Refs #<issue> instead when this PR only partly resolves the issue. -->
+
 ## Verification
 
 <!-- Check what applies; delete what does not. -->

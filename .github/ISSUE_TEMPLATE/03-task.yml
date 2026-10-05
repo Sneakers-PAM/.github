@@ -2,6 +2,7 @@ name: Task
 description: Maintenance, chores, or other work that isn't a feature or a bug.
 title: "chore(<scope>): <short description>"
 labels: ["task"]
+type: Task
 body:
   - type: textarea
     id: summary
