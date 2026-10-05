@@ -101,7 +101,7 @@ jobs:
           head="$EVENT_SHA"
           case "$EVENT" in
             pull_request | pull_request_target)
-              is_commit "$PR_BASE" && is_commit "$PR_HEAD" || no_range
+              if ! is_commit "$PR_BASE" || ! is_commit "$PR_HEAD"; then no_range; fi
               base="$PR_BASE"
               head="$PR_HEAD"
               # A pull_request run checks out GitHub's test merge
@@ -113,7 +113,7 @@ jobs:
               fi
               ;;
             merge_group)
-              is_commit "$MG_BASE" && is_commit "$MG_HEAD" || no_range
+              if ! is_commit "$MG_BASE" || ! is_commit "$MG_HEAD"; then no_range; fi
               base="$MG_BASE"
               head="$MG_HEAD"
               ;;
