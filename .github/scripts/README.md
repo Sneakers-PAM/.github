@@ -81,6 +81,60 @@ streams and the like. Scrub 2, the independent reviewer pass, reviews those file
 Scrub 1 is a pattern check; it doesn't catch names, short host names, ticket keys or codenames.
 Scrub 2 does that too.
 
+# DCO
+
+`.github/workflows/dco.yml` runs `dco-check.sh <base> <head>`, which fails when any non-merge commit
+in `base..head` has no `Signed-off-by: Name <email>` trailer. Merge commits are skipped. `scrub.yml`
+already checks sign-offs, so a repo that calls the scrub doesn't need it. It's for a repo that
+doesn't, called on pull requests and merge groups:
+
+```yaml
+  dco:
+    if: github.event_name != 'push' && github.event.pull_request.draft != true
+    uses: Sneakers-PAM/.github/.github/workflows/dco.yml@main
+```
+
+```bash
+bash .github/scripts/dco-check.sh origin/main HEAD
+bash .github/scripts/dco-check_test.sh
+```
+
+# Go build and test
+
+`.github/workflows/go.yml` is the shared form of the Build & Test job each Go service carries in its
+own `job-go-lang-ci.yaml`: generated code current, buf lint and breaking (only when the repo has a
+`buf.yaml`), gofmt, go mod tidy, build, vet and `go test -race -count=1 -cover`. buf is pinned and
+checked against its SHA-256, the protoc plugins (protoc-gen-go v1.36.11 and protoc-gen-go-grpc v1.6.2,
+the service repos' pins) come through the Go checksum database, and the actions are pinned by commit.
+
+```yaml
+  go:
+    if: github.event_name == 'pull_request' && github.event.pull_request.draft != true
+    permissions:
+      contents: read
+    uses: Sneakers-PAM/.github/.github/workflows/go.yml@main
+    with:
+      setup-script: scripts/ci-services.sh
+```
+
+- `setup-script` is the repo's own script. It starts what the tests need (Postgres, Kratos, an LDAP
+  server) with `docker run` and appends settings such as a test DSN to `$GITHUB_ENV`. Leave it out
+  when the tests need no containers.
+- The status check becomes `go / Build & Test`, so the repo's ruleset swaps the required
+  `🧪 Build & Test` for it in the same change.
+- Repo-specific steps (the workloadauth copy check, image builds, cross-builds, chart checks) stay
+  in the repo's own workflow.
+
+Which repos could switch (none is moved yet):
+
+| Repo | Fit |
+|---|---|
+| sneakers-gateway, sneakers-notify, sneakers-sshbroker | direct: no test containers |
+| sneakers-mcp | direct; its cross-build step stays in its own workflow |
+| sneakers-audit, sneakers-vault | with a `setup-script` that starts Postgres (vault also keeps its image job) |
+| sneakers-connector, sneakers-identity | with a `setup-script` that starts the LDAP server or Kratos as well |
+| sneakers-release | stays on its own workflow (image and chart checks) |
+
 # Proto sync
 
 `proto-sync.sh` holds the checks behind `.github/workflows/proto-sync.yml`. A service never imports
