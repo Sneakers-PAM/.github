@@ -3,6 +3,17 @@
 `scrub.py` holds the generic identifier and DCO checks behind the org's reusable workflow,
 `.github/workflows/scrub.yml`. It reads no term list: every pattern is generic.
 
+This repo's own `.github/workflows/checks.yml` runs actionlint and every self-test here
+(`scrub_test.py` and each `*_test.sh`) on each pull request, and runs `scrub.yml` over this repo's
+commits with the `scrub.py` from the commit under test. To run the same checks locally, with
+actionlint and buf on the `PATH`:
+
+```bash
+actionlint
+python3 .github/scripts/scrub_test.py
+for t in .github/scripts/*_test.sh; do bash "$t"; done
+```
+
 ## Run it locally
 
 ```bash
