@@ -1,0 +1,51 @@
+# DCO: every non-merge commit a PR or merge group adds must carry a
+# "Signed-off-by: Name <email>" trailer. scrub.yml already checks sign-offs,
+# so this is for a repo that doesn't call the scrub. Its checks.yml calls it:
+#
+#   jobs:
+#     dco:
+#       if: github.event_name != 'pull_request' || github.event.pull_request.draft != true
+#       uses: Sneakers-PAM/.github/.github/workflows/dco.yml@main
+#
+# The logic lives in .github/scripts/dco-check.sh. It takes no secrets.
+name: dco
+
+on:
+  workflow_call:
+    inputs:
+      tools-ref:
+        description: Ref of Sneakers-PAM/.github to take dco-check.sh from.
+        type: string
+        default: main
+
+env:
+  TOOLS: .dco-tools
+
+jobs:
+  dco:
+    name: DCO
+    if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check out the DCO tools
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Sneakers-PAM/.github
+          ref: ${{ inputs.tools-ref }}
+          path: ${{ env.TOOLS }}
+          persist-credentials: false
+
+      - name: Check the sign-offs
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+          HEAD: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
+        run: bash "$TOOLS/.github/scripts/dco-check.sh" "$BASE" "$HEAD"

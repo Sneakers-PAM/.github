@@ -1,0 +1,180 @@
+# Go build and test for a Sneakers-PAM repo, with the proto checks when the
+# repo has protos. A repo's checks.yml calls it from a `go` job (the status
+# check is then `go / Build & Test`; update the repo's ruleset when it
+# replaces the Build & Test job of job-go-lang-ci.yaml):
+#
+#   on:
+#     pull_request:
+#       types: [opened, synchronize, reopened, ready_for_review]
+#     merge_group:
+#   permissions:
+#     contents: read
+#   jobs:
+#     go:
+#       if: github.event_name == 'pull_request' && github.event.pull_request.draft != true
+#       uses: Sneakers-PAM/.github/.github/workflows/go.yml@main
+#       with:
+#         setup-script: scripts/ci-services.sh
+#
+# Steps, in order:
+#   - the proto steps, only when the repo has a buf.yaml:
+#       - generate: scripts/proto-generate.sh when present (it fetches the
+#         callee protos pinned in proto-refs.env, which buf lint needs too),
+#         otherwise buf generate; then fail if gen/ is stale;
+#       - buf lint;
+#       - buf breaking of proto/ against the base branch's proto/, skipped
+#         while the base has no proto/ yet. Callee protos are never compared:
+#         their owners' proto-sync check covers them;
+#   - gofmt, and go mod tidy leaving go.mod and go.sum unchanged;
+#   - the repo's setup-script, when set: it starts the test dependencies the
+#     repo owns (Postgres or Redis containers, say) and may append
+#     variables, such as a test DSN, to $GITHUB_ENV;
+#   - go build, go vet and go test.
+#
+# buf is downloaded at a pinned version and checked against its SHA-256; the
+# protoc plugins come through go install, which checks each module against the
+# Go checksum database. It takes no secrets.
+name: go
+
+on:
+  workflow_call:
+    inputs:
+      setup-script:
+        description: Repo script run before the tests to start their dependencies. Empty runs none.
+        type: string
+        default: ""
+      test-flags:
+        description: Flags passed to go test.
+        type: string
+        default: -race -count=1 -cover
+      timeout-minutes:
+        description: Job timeout.
+        type: number
+        default: 25
+      protoc-gen-go-version:
+        description: protoc-gen-go version the stubs are generated with.
+        type: string
+        default: v1.36.11
+      protoc-gen-go-grpc-version:
+        description: protoc-gen-go-grpc version the stubs are generated with.
+        type: string
+        default: v1.6.2
+
+env:
+  BUF_VERSION: 1.73.0
+  BUF_SHA256: 8f2986298ad08f0cc1bf999b9797b7c383adf32d7edf0f73d6f1e1a701baeac1
+
+jobs:
+  build-test:
+    name: Build & Test
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Find the base branch
+        id: base
+        env:
+          BASE_REF: ${{ github.base_ref || github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          echo "ref=origin/${BASE_REF}" >> "$GITHUB_OUTPUT"
+          if [ -f buf.yaml ]; then
+            echo "proto=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No buf.yaml; the proto steps are skipped."
+          fi
+
+      - name: Install buf and the protoc plugins
+        if: steps.base.outputs.proto == 'true'
+        env:
+          PROTOC_GEN_GO_VERSION: ${{ inputs.protoc-gen-go-version }}
+          PROTOC_GEN_GO_GRPC_VERSION: ${{ inputs.protoc-gen-go-grpc-version }}
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/buf"
+          mkdir -p "$dir"
+          curl -fsSL -o "$dir/buf" \
+            "https://github.com/bufbuild/buf/releases/download/v${BUF_VERSION}/buf-Linux-x86_64"
+          echo "$BUF_SHA256  $dir/buf" | sha256sum -c -
+          chmod +x "$dir/buf"
+          echo "$dir" >> "$GITHUB_PATH"
+          go install "google.golang.org/protobuf/cmd/protoc-gen-go@${PROTOC_GEN_GO_VERSION}"
+          go install "google.golang.org/grpc/cmd/protoc-gen-go-grpc@${PROTOC_GEN_GO_GRPC_VERSION}"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Generated code is current
+        if: steps.base.outputs.proto == 'true'
+        run: |
+          set -euo pipefail
+          if [ -x scripts/proto-generate.sh ]; then
+            scripts/proto-generate.sh
+          else
+            buf generate
+          fi
+          git diff --exit-code -- gen
+          test -z "$(git status --porcelain -- gen)"
+
+      - name: buf lint
+        if: steps.base.outputs.proto == 'true'
+        run: buf lint
+
+      - name: buf breaking
+        if: steps.base.outputs.proto == 'true'
+        env:
+          BASE: ${{ steps.base.outputs.ref }}
+        run: |
+          set -euo pipefail
+          if [ -d proto ] && git cat-file -e "${BASE}:proto" 2>/dev/null; then
+            git worktree add -q --detach "$RUNNER_TEMP/base" "$BASE"
+            buf breaking proto --against "$RUNNER_TEMP/base/proto"
+          else
+            echo "The base has no proto/ yet; nothing to compare against."
+          fi
+
+      - name: gofmt
+        run: |
+          set -euo pipefail
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "gofmt needed on:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go mod tidy
+        run: |
+          set -euo pipefail
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+      - name: Start the test dependencies
+        if: inputs.setup-script != ''
+        env:
+          SETUP_SCRIPT: ${{ inputs.setup-script }}
+        run: bash "./$SETUP_SCRIPT"
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        env:
+          TEST_FLAGS: ${{ inputs.test-flags }}
+        run: |
+          set -euo pipefail
+          read -r -a flags <<< "$TEST_FLAGS"
+          go test "${flags[@]}" ./...
