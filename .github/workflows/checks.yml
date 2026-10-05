@@ -22,6 +22,9 @@ env:
   ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
   BUF_VERSION: 1.73.0
   BUF_SHA256: 8f2986298ad08f0cc1bf999b9797b7c383adf32d7edf0f73d6f1e1a701baeac1
+  # The same pin as scrub.yml; scrub_scope_test.sh fails if they drift.
+  GITLEAKS_VERSION: 8.30.1
+  GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
 
 jobs:
   checks:
@@ -35,7 +38,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Install actionlint and buf
+      - name: Install actionlint, buf and gitleaks
         run: |
           set -euo pipefail
           dir="$RUNNER_TEMP/tools"
@@ -49,6 +52,11 @@ jobs:
             "https://github.com/bufbuild/buf/releases/download/v${BUF_VERSION}/buf-Linux-x86_64"
           echo "$BUF_SHA256  $dir/buf" | sha256sum -c -
           chmod +x "$dir/buf"
+          tgz="$RUNNER_TEMP/gitleaks.tar.gz"
+          curl -fsSL -o "$tgz" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "$GITLEAKS_SHA256  $tgz" | sha256sum -c -
+          tar -xzf "$tgz" -C "$dir" gitleaks
           echo "$dir" >> "$GITHUB_PATH"
 
       - name: actionlint

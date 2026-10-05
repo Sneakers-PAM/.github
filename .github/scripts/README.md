@@ -38,6 +38,26 @@ Leave out `--base` to scan the whole history.
   a NUL byte is treated as binary, and its ASCII, UTF-16LE and UTF-16BE string runs are scanned.
 - **dco** requires `Signed-off-by: Name <email>` on every non-merge commit.
 
+## What range the workflow reads
+
+`scrub.yml` gives gitleaks, `identifiers` and `dco` the same range:
+
+- **pull_request:** the PR's own commits plus the merge result, `<first parent>..<test merge>` of the
+  `refs/pull/<n>/merge` commit GitHub checks out (or `base..head` when the run has no test merge).
+  A commit on another branch never fails a PR. A PR with no resolvable range fails (exit 2) instead
+  of falling back to a full-history scan.
+- **merge_group:** the group's `base..head`.
+- **push to the default branch, schedule, manual run:** the full history of the checked-out commit.
+  That's its ancestors only; nothing ever reads `--all`.
+- **push to any other branch:** `before..after` (the full history on a new branch's first push).
+
+`scrub_scope_test.sh` runs the workflow's own step scripts against throwaway repos to pin this down.
+
+A caller that also runs `gitleaks detect --source .` (or `gitleaks git .`) itself, with no
+`--log-opts`, after a `fetch-depth: 0` checkout reads `git log --all`: every fetched branch. One bad
+branch then fails every open PR. The scrub already runs gitleaks over the right range, so such a step
+can simply be removed.
+
 ## Allowing a match
 
 - `scrub:allow=<class>[,<class>]` on a line of a file allows those classes on that line only, for
