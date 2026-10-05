@@ -8,8 +8,19 @@
 # Callers should trigger on pull_request types [opened, synchronize, reopened,
 # edited, ready_for_review] so an edited PR title or body is scanned again.
 #
-# It runs three checks over the commits in the PR (or push) and fails if any
-# finds something:
+# What it reads (the same range for all three checks):
+#   - pull_request: only the PR's own commits plus the merge result, that is
+#     <test merge's first parent>..<test merge> (refs/pull/<n>/merge), or
+#     base..head when the run didn't check out a test merge. A commit on some
+#     other branch never fails the PR. No range is an error, never a silent
+#     full-history scan;
+#   - merge_group: the group's base..head;
+#   - push to the default branch, a schedule or a manual run: the full history
+#     of the checked-out commit (that commit's ancestors, never every branch);
+#   - push to any other branch: before..after;
+#   - full-history: true widens any of these to the full history of the head.
+#
+# It runs three checks over that range and fails if any finds something:
 #   - gitleaks, pinned and checksum-verified, with the org .gitleaks.toml
 #     (merge commits are read with --diff-merges=remerge, so what a merge
 #     adds beyond its parents is scanned too);
@@ -33,7 +44,7 @@ on:
         type: string
         default: ""
       full-history:
-        description: Scan the whole history reachable from the head instead of the PR or push range.
+        description: Scan the whole history reachable from the head instead of the PR, merge group or push range.
         type: boolean
         default: false
       tools-ref:
@@ -73,6 +84,9 @@ jobs:
         env:
           EVENT: ${{ github.event_name }}
           FULL: ${{ inputs.full-history }}
+          REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          EVENT_SHA: ${{ github.sha }}
           PR_BASE: ${{ github.event.pull_request.base.sha }}
           PR_HEAD: ${{ github.event.pull_request.head.sha }}
           PUSH_BEFORE: ${{ github.event.before }}
@@ -81,15 +95,39 @@ jobs:
           MG_HEAD: ${{ github.event.merge_group.head_sha }}
         run: |
           set -euo pipefail
+          is_commit() { [ -n "${1//0/}" ] && git cat-file -e "${1}^{commit}" 2>/dev/null; }
+          no_range() { echo "::error::No commit range for a ${EVENT} event."; exit 2; }
+          base=""
+          head="$EVENT_SHA"
           case "$EVENT" in
-            pull_request|pull_request_target) base="$PR_BASE"; head="$PR_HEAD" ;;
-            merge_group) base="$MG_BASE"; head="$MG_HEAD" ;;
-            push) base="$PUSH_BEFORE"; head="$PUSH_AFTER" ;;
-            *) base=""; head="$GITHUB_SHA" ;;
+            pull_request | pull_request_target)
+              is_commit "$PR_BASE" && is_commit "$PR_HEAD" || no_range
+              base="$PR_BASE"
+              head="$PR_HEAD"
+              # A pull_request run checks out GitHub's test merge
+              # (refs/pull/<n>/merge: first parent the base, second the PR
+              # head). Scanning up to it reads the merge result as well.
+              if is_commit "$EVENT_SHA" && [ "$(git rev-parse -q --verify "${EVENT_SHA}^2" || true)" = "$PR_HEAD" ]; then
+                base="$(git rev-parse "${EVENT_SHA}^1")"
+                head="$EVENT_SHA"
+              fi
+              ;;
+            merge_group)
+              is_commit "$MG_BASE" && is_commit "$MG_HEAD" || no_range
+              base="$MG_BASE"
+              head="$MG_HEAD"
+              ;;
+            push)
+              head="$PUSH_AFTER"
+              # The default branch is read in full on every push; other
+              # branches only for what the push adds.
+              if [ "$REF" != "refs/heads/$DEFAULT_BRANCH" ] && is_commit "$PUSH_BEFORE"; then
+                base="$PUSH_BEFORE"
+              fi
+              ;;
           esac
-          if [ "$FULL" = "true" ] || [ -z "${base//0/}" ] || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
-            base=""
-          fi
+          if [ "$FULL" = "true" ]; then base=""; fi
+          is_commit "$head" || no_range
           if [ -n "$base" ]; then echo "Scanning $base..$head"; else echo "Scanning the full history of $head"; fi
           {
             echo "base=$base"
