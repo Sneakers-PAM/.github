@@ -135,6 +135,48 @@ Which repos could switch (none is moved yet):
 | sneakers-connector, sneakers-identity | with a `setup-script` that starts the LDAP server or Kratos as well |
 | sneakers-release | stays on its own workflow (image and chart checks) |
 
+# Quality
+
+`.github/workflows/quality.yml` runs the heavier Go tools on a PR as **advisory** checks: their
+findings show on the PR while it's under review, and they never fail it or block its merge. The
+service repos already require gosec and govulncheck through their own workflows; this is an extra a
+repo opts into with one job in its `checks.yml`:
+
+```yaml
+  quality:
+    if: github.event_name == 'pull_request' && github.event.pull_request.draft != true
+    permissions:
+      contents: read
+    uses: Sneakers-PAM/.github/.github/workflows/quality.yml@main
+```
+
+It takes two optional inputs: `timeout-minutes` (each job's timeout, default 15) and `tools-ref`
+(the ref of this repo to take `quality-report.sh` from, default `main`). Each tool runs in its own
+job, side by side:
+
+| Check | Tool |
+|---|---|
+| `quality / Lint (advisory)` | golangci-lint, with the repo's `.golangci.yml` when there is one |
+| `quality / SAST (advisory)` | gosec, generated files skipped |
+| `quality / Vulnerabilities (advisory)` | govulncheck: known vulnerabilities the code reaches in its dependencies |
+| `quality / Modernize (advisory)` | the Go `modernize` analyzer, test files included |
+
+The tool step continues on error, so findings never fail the job. `quality-report.sh` turns the
+tool's output into warning annotations (the first 50) and a section of the job summary with the
+full output and the count. Each job continues on error too, so even a failed install leaves the
+caller's run green; the summary then says the tool didn't run. Never add these checks to a
+ruleset's required status checks.
+
+golangci-lint and gosec are release binaries checked against their SHA-256; govulncheck and
+modernize come through `go install` and the Go checksum database.
+
+```bash
+bash .github/scripts/quality-report_test.sh
+```
+
+feeds canned tool output to `quality-report.sh` and checks the annotations and summary it writes.
+It needs none of the tools.
+
 # Proto sync
 
 `proto-sync.sh` holds the checks behind `.github/workflows/proto-sync.yml`. A service never imports
