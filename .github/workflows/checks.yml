@@ -1,0 +1,74 @@
+# This repo's own checks: actionlint over the workflows and the scripts'
+# self-tests in one job, and the org's scrub over this repo's own commits,
+# using the scrub.py from the commit under test.
+name: checks
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited, ready_for_review]
+  merge_group:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ACTIONLINT_VERSION: 1.7.12
+  ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+  BUF_VERSION: 1.73.0
+  BUF_SHA256: 8f2986298ad08f0cc1bf999b9797b7c383adf32d7edf0f73d6f1e1a701baeac1
+
+jobs:
+  checks:
+    if: github.event_name != 'push' && github.event.pull_request.draft != true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install actionlint and buf
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/tools"
+          mkdir -p "$dir"
+          tgz="$RUNNER_TEMP/actionlint.tar.gz"
+          curl -fsSL -o "$tgz" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "$ACTIONLINT_SHA256  $tgz" | sha256sum -c -
+          tar -xzf "$tgz" -C "$dir" actionlint
+          curl -fsSL -o "$dir/buf" \
+            "https://github.com/bufbuild/buf/releases/download/v${BUF_VERSION}/buf-Linux-x86_64"
+          echo "$BUF_SHA256  $dir/buf" | sha256sum -c -
+          chmod +x "$dir/buf"
+          echo "$dir" >> "$GITHUB_PATH"
+
+      - name: actionlint
+        run: actionlint
+
+      - name: Script self-tests
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          git config --global user.name "CI"
+          git config --global user.email "ci@example.org"
+          python3 .github/scripts/scrub_test.py
+          for t in .github/scripts/*_test.sh; do
+            echo "::group::$t"
+            bash "$t"
+            echo "::endgroup::"
+          done
+
+  scrub:
+    if: github.event.pull_request.draft != true
+    uses: ./.github/workflows/scrub.yml
+    with:
+      tools-ref: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha || github.sha }}
