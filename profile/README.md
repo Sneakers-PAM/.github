@@ -3,11 +3,13 @@
 > 🔐 Open-source privileged access management, built as a set of small services.
 
 Sneakers-PAM is an open-source, Apache-2.0 licensed privileged access management
-system: a vault for credentials, scoped secret delivery to the systems that need them,
-and an audit trail for every access, built as a set of small services rather than one
-monolith.
+system. It keeps credentials in a vault, tests and rotates them on the systems they
+belong to, hands them out through approvals, check-out and brokered SSH sessions, and
+records every access in a tamper-evident audit trail. It's built as a set of small
+services rather than one monolith, with web, mobile and MCP clients, and runs on
+Kubernetes or as a single-node appliance.
 
-🌍 **Project site:** [sneakers-pam.com](https://sneakers-pam.com)
+🏠 **Home:** [sneakers-pam.com](https://sneakers-pam.com)
 
 ## 🧩 Services
 
@@ -27,7 +29,7 @@ monolith.
 ## 📦 Release and appliance
 
 - [sneakers-release](https://github.com/Sneakers-PAM/sneakers-release): the release manifest, with every service, k0s and third-party component pinned to one version.
-- [sneakers-appliance](https://github.com/Sneakers-PAM/sneakers-appliance): the appliance OS, a single-node k0s image with a closed shell, signed releases and two image slots, built on the [CryptOS](https://github.com/CryptOS-PKI) appliance design.
+- [sneakers-appliance](https://github.com/Sneakers-PAM/sneakers-appliance): the appliance OS, a single-node k0s image with a closed shell, signed releases and two image slots.
 
 ## 📱 Mobile
 
@@ -36,7 +38,7 @@ monolith.
 
 ## 🌐 Website
 
-- [website](https://github.com/Sneakers-PAM/website): the public website, with the project site and the system documentation.
+- [website](https://github.com/Sneakers-PAM/website): the source of the project site and the system documentation.
 
 ## 🤝 Contributing
 
