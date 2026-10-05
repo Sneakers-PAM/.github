@@ -1,1 +1,8 @@
 blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/Sneakers-PAM/.github/blob/main/.github/SECURITY.md
+    about: Report security issues privately, never in a public issue.
+  - name: Questions and help
+    url: https://github.com/Sneakers-PAM/.github/blob/main/.github/SUPPORT.md
+    about: Where to ask usage questions.

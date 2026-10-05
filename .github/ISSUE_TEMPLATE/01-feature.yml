@@ -2,6 +2,7 @@ name: Feature
 description: A unit of new work or an enhancement.
 title: "feat(<scope>): <short description>"
 labels: ["enhancement"]
+type: Feature
 body:
   - type: textarea
     id: summary
