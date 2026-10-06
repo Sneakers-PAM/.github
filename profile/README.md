@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/sneakers-mark-dark.svg">
+    <img src="assets/sneakers-mark-light.svg" alt="Sneakers-PAM mark" width="96">
+  </picture>
+</p>
+
 # Sneakers-PAM 👟
 
 > 🔐 Open-source privileged access management, built as a set of small services.
