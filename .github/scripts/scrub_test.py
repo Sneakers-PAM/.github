@@ -422,5 +422,47 @@ class EndToEndTest(unittest.TestCase):
             self.assertEqual(dco.returncode, 0, dco.stdout + dco.stderr)
 
 
+PNG_SIG = b"\x89PNG\r\n\x1a\n"
+C2PA_CHUNK = b"\x00\x00\x00\x18caBX\x00\x00\x00\x10jumb\x00\x00\x00\x08jumdc2pa\x00\x00\x00\x00"
+
+
+class ProvenanceTest(unittest.TestCase):
+    setUp = EndToEndTest.setUp
+    tearDown = EndToEndTest.tearDown
+    run_scrub = EndToEndTest.run_scrub
+
+    def add_files(self, files):
+        for name, data in files.items():
+            with open(os.path.join(self.repo, name), "wb") as fh:
+                fh.write(data)
+        git(self.repo, "add", "-A")
+        git(self.repo, "-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "test: add" + SIGNOFF)
+        return self.run_scrub("identifiers", "--base", self.base,
+                              "--head", git(self.repo, "rev-parse", "HEAD"))
+
+    def test_png_with_a_c2pa_chunk_flagged(self):
+        ids = self.add_files({"logo.PNG": PNG_SIG + C2PA_CHUNK})
+        self.assertEqual(ids.returncode, 1, ids.stdout + ids.stderr)
+        self.assertIn("logo.PNG (asset, commit", ids.stdout)
+        self.assertIn("provenance", ids.stdout)
+
+    def test_svg_with_c2pa_metadata_flagged(self):
+        svg = b'<svg xmlns="http://www.w3.org/2000/svg"><metadata>c2pa.assertions</metadata></svg>\n'
+        ids = self.add_files({"mark.svg": svg})
+        self.assertEqual(ids.returncode, 1, ids.stdout + ids.stderr)
+        self.assertIn("mark.svg (asset, commit", ids.stdout)
+        self.assertIn("provenance", ids.stdout)
+
+    def test_markers_outside_asset_types_pass(self):
+        ids = self.add_files({"notes.txt": b"we check for c2pa and jumb boxes\n",
+                              "blob.bin": b"\x00\x01" + C2PA_CHUNK})
+        self.assertEqual(ids.returncode, 0, ids.stdout + ids.stderr)
+
+    def test_clean_assets_pass(self):
+        ids = self.add_files({"icon.png": PNG_SIG + b"\x00\x00\x00\x00IEND\xaeB`\x82",
+                              "mark.svg": b'<svg xmlns="http://www.w3.org/2000/svg"/>\n'})
+        self.assertEqual(ids.returncode, 0, ids.stdout + ids.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

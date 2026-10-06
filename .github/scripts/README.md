@@ -2,6 +2,8 @@
 
 `scrub.py` holds the generic identifier and DCO checks behind the org's reusable workflow,
 `.github/workflows/scrub.yml`. It reads no term list: every pattern is generic.
+`identifiers` also fails on provenance metadata (C2PA manifests, JUMBF boxes) in images,
+icons, PDFs and SVGs; no allow marker covers it.
 
 This repo's own `.github/workflows/checks.yml` runs actionlint and every self-test here
 (`scrub_test.py` and each `*_test.sh`) on each pull request, and runs `scrub.yml` over this repo's
