@@ -26,6 +26,8 @@ node_10.x; a lone v prefix reads as a version), emails (email), home paths
 (home-path: /home/<name>, /Users/<name>, /code/<name>, C:\\Users\\<name> and
 file:// URLs to them) and host names (fqdn) that could identify a private
 deployment.
+It also flags provenance metadata (provenance: C2PA manifests and JUMBF boxes)
+in images, icons, PDFs and SVGs. No allow marker covers it.
 Patterns are generic on purpose: no term list is read from anywhere.
 
 Allowed:
@@ -112,6 +114,13 @@ PUBLIC_DOMAINS = {
 ORG_DOMAINS = {"sneakers-pam.com"}
 
 DOCS_EXAMPLES = "docs/examples/"
+
+# Provenance metadata some export tools embed in assets: C2PA manifests in
+# JUMBF boxes (PNG caBX chunks, JPEG APP11, SVG metadata). Only these file
+# types are checked, so marker bytes in other binaries never match by chance.
+ASSET_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".heic", ".tif",
+                    ".tiff", ".ico", ".svg", ".pdf")
+PROVENANCE = re.compile(rb"c2pa|C2PA|caBX|jumb|contentauth")
 SIGNOFF = re.compile(r"^Signed-off-by: \S.* <[^<>\s]+@[^<>\s]+>\s*$", re.M)
 
 
@@ -316,6 +325,10 @@ class Collector:
             if data is None:
                 sys.stderr.write(f"scrub: can't read the content of {shown} ({label})\n")
                 sys.exit(2)
+            if path.lower().endswith(ASSET_EXTENSIONS):
+                m = PROVENANCE.search(data)
+                if m:
+                    self.provenance(path, f"{shown} (asset, {label})", m.group(0).decode("ascii"))
             if b"\x00" in data:
                 # Compiled files, images and UTF-16 text: scan their string runs.
                 for run in string_runs(data):
@@ -325,6 +338,12 @@ class Collector:
             for lineno, text in added_lines(old_mode, old_sha, new_sha, data):
                 self.add(text, f"{shown}:{lineno} ({label})", path, lineno,
                          docs_example=docs)
+
+    def provenance(self, path, where, marker):
+        key = (path, "provenance", marker, "")
+        if key not in self.seen:
+            self.seen.add(key)
+            self.findings.append(Finding("provenance", marker, where, path))
 
     def message(self, sha):
         short = sha[:12]
