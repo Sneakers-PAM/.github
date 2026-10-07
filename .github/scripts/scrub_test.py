@@ -160,6 +160,46 @@ class FqdnTest(unittest.TestCase):
         self.assertEqual(classes(EMAIL_BAD), ["email"])
 
 
+def descriptor(field, glue=None, length=None):
+    """A protoc-gen-go raw descriptor line: field 11 (go_package), its length, the value."""
+    n = len(field) if length is None else length
+    return '\t"' + (glue if glue is not None else "Z" + chr(n)) + field + 'b\\x06proto3"'
+
+
+GO_PACKAGE = "github.com/Sneakers-PAM/sneakers-appliance/gen/go/osadmin/v1;osadminv1"
+
+
+class DescriptorTest(unittest.TestCase):
+    def test_tag_and_length_glued_to_an_allowed_domain_pass(self):
+        self.assertEqual(classes(descriptor(GO_PACKAGE)), [])
+
+    def test_length_byte_after_an_escaped_tag_passes(self):
+        line = '\t"\\x0a' + chr(len(GO_PACKAGE)) + GO_PACKAGE + '"'
+        self.assertEqual(classes(line), [])
+
+    def test_varint_length_escape_passes(self):
+        long = GO_PACKAGE + "x" * (200 - len(GO_PACKAGE))
+        self.assertEqual(classes('\t"Z\\xc8\\x01' + long + '"'), [])
+
+    def test_length_past_the_literal_is_still_flagged(self):
+        self.assertEqual(classes(descriptor(GO_PACKAGE, length=len(GO_PACKAGE) + 20)), ["fqdn"])
+
+    def test_non_tag_prefix_is_still_flagged(self):
+        self.assertEqual(classes(descriptor(GO_PACKAGE, glue="n" + chr(len(GO_PACKAGE)))),
+                         ["fqdn"])
+
+    def test_forbidden_host_inside_a_descriptor_is_flagged(self):
+        field = HOST_BAD + "/gen/go/v1;v1"
+        self.assertEqual(classes(descriptor(field)), ["fqdn"])
+
+    def test_forbidden_host_in_go_yaml_markdown_and_pb_go_comments_is_flagged(self):
+        for text in ('\tconst host = "' + HOST_BAD + '"',
+                     "  url: https://" + HOST_BAD + "/x",
+                     "See [the wiki](https://" + HOST_BAD + "/page).",
+                     "// source: " + HOST_BAD + "/osadmin.proto"):
+            self.assertEqual(classes(text), ["fqdn"], text)
+
+
 class AllowTest(unittest.TestCase):
     def test_marker_is_class_specific(self):
         line = "host = " + IP_10 + " see " + HOST_BAD

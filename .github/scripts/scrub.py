@@ -39,7 +39,12 @@ Allowed:
     example.com, example.org and example.net (and their subdomains) only; host
     names under any example.* domain; GitHub noreply addresses, the public
     domains below and the project's own domain, sneakers-pam.com, as host
-    names (plus --allow-domain).
+    names (plus --allow-domain);
+  - an allowed host name with protobuf bytes glued on in front, as in a
+    protoc-gen-go raw descriptor (a string field's tag byte, a length byte that
+    fits the value, or \\xNN escapes). After those bytes are stripped, the rest
+    must be an allowed domain, so a private host name in a descriptor is still
+    flagged.
 Every honoured allow is printed as a warning.
 
 Exit status: 0 clean, 1 findings, 2 usage or git error.
@@ -204,9 +209,37 @@ class Scanner:
             host = m.group(1)
             if is_code_selector(host.split(".")):
                 continue
-            if not self.domain_allowed(host):
+            if not self.domain_allowed(host) and not self.descriptor_glue(text, m.start(1), host):
                 found.append(Finding("fqdn", host))
         return found
+
+    def descriptor_glue(self, text, start, host):
+        """True when host is an allowed domain behind protobuf bytes in a raw descriptor.
+
+        protoc-gen-go writes descriptors as Go string literals, so a string
+        field's tag and length bytes can print as letters glued onto the value
+        (go_package: "Z" then the length). Strip at most a tag byte, a length
+        byte that matches the value, and \\xNN escapes; the rest must be allowed.
+        """
+        rest = host
+        while True:
+            if start > 0 and text[start - 1] == "\\" and re.match(r"x[0-9a-f]{2}", rest, re.I):
+                rest, start = rest[3:], start + 3
+                if self.domain_allowed(rest):
+                    return True
+                continue
+            for k in (1, 2):
+                if len(rest) <= k:
+                    return False
+                if k == 2 and (ord(rest[0]) & 7 != 2 or ord(rest[0]) < 8):
+                    continue
+                n = ord(rest[k - 1])
+                value = text[start + k:start + k + n]
+                if (len(value) == n and '"' not in value and "\\" not in value
+                        and value.lower().startswith(rest[k:].lower())
+                        and self.domain_allowed(rest[k:])):
+                    return True
+            return False
 
 
 def git_bytes(*args, check=True):
