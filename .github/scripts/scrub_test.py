@@ -292,6 +292,61 @@ class EndToEndTest(unittest.TestCase):
         self.assertIn("test: add an unsigned commit", dco.stdout)
         self.assertIn("1 finding(s)", dco.stdout)
 
+    def dco_exempt(self, sha, repo="Sneakers-PAM/example", reason="squash merge lost its sign-off"):
+        path = os.path.join(self.tmp.name, "dco-exempt.txt")
+        with open(path, "w") as fh:
+            fh.write("# repo sha reason\n" + f"{repo} {sha} {reason}\n")
+        return path
+
+    def unsigned_on_main(self):
+        self.commit("u.txt", "clean\n", "test: an unsigned squash merge")
+        return git(self.repo, "rev-parse", "HEAD")
+
+    def dco_main(self, exempt, *extra):
+        return self.run_scrub("dco", "--head", "HEAD", "--exempt-file", exempt,
+                              "--repo", "Sneakers-PAM/example", *extra)
+
+    def test_listed_commit_on_the_default_branch_passes_as_a_warning(self):
+        sha = self.unsigned_on_main()
+        dco = self.dco_main(self.dco_exempt(sha), "--default-branch-tip", sha)
+        self.assertEqual(dco.returncode, 0, dco.stdout + dco.stderr)
+        self.assertIn("allowed by dco-exempt", dco.stdout)
+        self.assertIn("squash merge lost its sign-off", dco.stdout)
+
+    def test_listed_commit_in_a_pr_range_still_fails(self):
+        sha = self.unsigned_on_main()
+        dco = self.run_scrub("dco", "--base", self.base, "--head", sha,
+                             "--exempt-file", self.dco_exempt(sha), "--repo", "Sneakers-PAM/example")
+        self.assertEqual(dco.returncode, 1, dco.stdout + dco.stderr)
+
+    def test_unlisted_unsigned_commit_still_fails_on_the_default_branch(self):
+        listed = self.unsigned_on_main()
+        self.commit("v.txt", "clean\n", "test: another unsigned commit")
+        tip = git(self.repo, "rev-parse", "HEAD")
+        dco = self.dco_main(self.dco_exempt(listed), "--default-branch-tip", tip)
+        self.assertEqual(dco.returncode, 1, dco.stdout + dco.stderr)
+        self.assertIn("test: another unsigned commit", dco.stdout)
+        self.assertIn("1 finding(s), 1 allowed", dco.stdout)
+
+    def test_listed_commit_off_the_default_branch_still_fails(self):
+        git(self.repo, "checkout", "-q", "-b", "side")
+        sha = self.unsigned_on_main()
+        dco = self.run_scrub("dco", "--head", sha, "--exempt-file", self.dco_exempt(sha),
+                             "--repo", "Sneakers-PAM/example", "--default-branch-tip", self.base)
+        self.assertEqual(dco.returncode, 1, dco.stdout + dco.stderr)
+
+    def test_listing_for_another_repo_or_a_short_sha_does_not_apply(self):
+        sha = self.unsigned_on_main()
+        for exempt in (self.dco_exempt(sha, repo="Sneakers-PAM/other"),):
+            dco = self.dco_main(exempt, "--default-branch-tip", sha)
+            self.assertEqual(dco.returncode, 1, dco.stdout + dco.stderr)
+        dco = self.dco_main(self.dco_exempt(sha[:12]), "--default-branch-tip", sha)
+        self.assertEqual(dco.returncode, 2, dco.stdout + dco.stderr)
+
+    def test_the_org_list_is_well_formed(self):
+        entries = scrub.load_dco_exempt(os.path.join(os.path.dirname(SCRIPT), "dco-exempt.txt"))
+        self.assertTrue(all(len(sha) == 40 for _, sha in entries))
+
     def test_github_annotations(self):
         self.commit("a.txt", "host = " + IP_10 + "\n", "test: add an address")
         head = git(self.repo, "rev-parse", "HEAD")

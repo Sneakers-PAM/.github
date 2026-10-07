@@ -29,7 +29,8 @@
 #     (always as text), binary string runs, paths, commit messages (merges
 #     included), authors, and the PR title and body;
 #   - .github/scripts/scrub.py dco: a Signed-off-by trailer on every non-merge
-#     commit.
+#     commit, except the reviewed default-branch commits in
+#     .github/scripts/dco-exempt.txt (full default-branch scans only).
 #
 # See .github/scripts/README.md for the allow markers and the limits.
 # The patterns are generic. This workflow never reads a term list, and takes
@@ -129,9 +130,18 @@ jobs:
           if [ "$FULL" = "true" ]; then base=""; fi
           is_commit "$head" || no_range
           if [ -n "$base" ]; then echo "Scanning $base..$head"; else echo "Scanning the full history of $head"; fi
+          # The dco-exempt list applies only to a full scan of the default branch itself
+          # (a push to it, a schedule or a manual run on it), never to a PR or another branch.
+          tip=""
+          case "$EVENT" in
+            push | schedule | workflow_dispatch)
+              if [ "$REF" = "refs/heads/$DEFAULT_BRANCH" ] && [ -z "$base" ]; then tip="$head"; fi
+              ;;
+          esac
           {
             echo "base=$base"
             echo "head=$head"
+            echo "default_branch_tip=$tip"
           } >> "$GITHUB_OUTPUT"
 
       - name: Install gitleaks
@@ -183,7 +193,11 @@ jobs:
         env:
           BASE: ${{ steps.range.outputs.base }}
           HEAD_SHA: ${{ steps.range.outputs.head }}
-        run: python3 "$TOOLS/.github/scripts/scrub.py" dco --base "$BASE" --head "$HEAD_SHA"
+          DEFAULT_TIP: ${{ steps.range.outputs.default_branch_tip }}
+          REPO: ${{ github.repository }}
+        run: |
+          python3 "$TOOLS/.github/scripts/scrub.py" dco --base "$BASE" --head "$HEAD_SHA" \
+            --repo "$REPO" --default-branch-tip "$DEFAULT_TIP"
 
       - name: Verdict
         env:

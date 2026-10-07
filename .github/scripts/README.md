@@ -38,7 +38,13 @@ Leave out `--base` to scan the whole history.
   backslash or newline in the name) can't hide its content; a blob that can't be read fails the
   run (exit 2). Diffs always run with `--text`, so `.gitattributes` can't hide a file. A file whose content has
   a NUL byte is treated as binary, and its ASCII, UTF-16LE and UTF-16BE string runs are scanned.
-- **dco** requires `Signed-off-by: Name <email>` on every non-merge commit.
+- **dco** requires `Signed-off-by: Name <email>` on every non-merge commit. The one exception is
+  `dco-exempt.txt`: reviewed `<owner>/<repo> <full sha> <reason>` entries for commits already
+  on a default branch (for example a squash merge that lost its trailer). It's honoured only by a
+  full scan of the default branch (`--default-branch-tip`, set by `scrub.yml` for a push,
+  schedule or manual run on it), never for a PR or branch push. Each honoured entry prints as a
+  warning. A malformed line, or a short sha, is an error. Squash-merge with GitHub's default
+  message (it keeps the commits' trailers) so the list stays empty.
 
 ## What range the workflow reads
 
