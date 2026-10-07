@@ -41,8 +41,9 @@ Allowed:
     domains below and the project's own domain, sneakers-pam.com, as host
     names (plus --allow-domain);
   - an allowed host name with protobuf bytes glued on in front, as in a
-    protoc-gen-go raw descriptor (a string field's tag byte, a length byte that
-    fits the value, or \\xNN escapes). After those bytes are stripped, the rest
+    protoc-gen-go raw descriptor (up to four layers of a string field's tag byte,
+    a length byte that fits the value, or \\xNN escapes, so go_package inside
+    the file options message counts). After those bytes are stripped, the rest
     must be an allowed domain, so a private host name in a descriptor is still
     flagged.
 Every honoured allow is printed as a warning.
@@ -218,29 +219,37 @@ class Scanner:
 
         protoc-gen-go writes descriptors as Go string literals, so a string
         field's tag and length bytes can print as letters glued onto the value
-        (go_package: "Z" then the length). Strip at most a tag byte, a length
-        byte that matches the value, and \\xNN escapes; the rest must be allowed.
+        (go_package: "Z" then the length), inside an options message's own tag
+        and length ("B" then the length). Strip up to four layers of a tag byte,
+        a length byte that fits the literal, and \\xNN escapes; the rest must be
+        an allowed domain, so nothing that isn't allowed ever passes.
         """
         rest = host
-        while True:
+        for _ in range(4):
             if start > 0 and text[start - 1] == "\\" and re.match(r"x[0-9a-f]{2}", rest, re.I):
                 rest, start = rest[3:], start + 3
-                if self.domain_allowed(rest):
-                    return True
-                continue
-            for k in (1, 2):
-                if len(rest) <= k:
+            else:
+                k = self._length_prefix(text, start, rest)
+                if not k:
                     return False
-                if k == 2 and (ord(rest[0]) & 7 != 2 or ord(rest[0]) < 8):
-                    continue
-                n = ord(rest[k - 1])
-                value = text[start + k:start + k + n]
-                if (len(value) == n and '"' not in value and "\\" not in value
-                        and value.lower().startswith(rest[k:].lower())
-                        and self.domain_allowed(rest[k:])):
-                    return True
-            return False
+                rest, start = rest[k:], start + k
+            if self.domain_allowed(rest):
+                return True
+        return False
 
+    @staticmethod
+    def _length_prefix(text, start, rest):
+        """How many glued bytes (1 or 2: a length, or a tag and a length) lead rest, or 0."""
+        for k in (2, 1):
+            if len(rest) <= k:
+                continue
+            if k == 2 and (ord(rest[0]) & 7 != 2 or ord(rest[0]) < 8):
+                continue
+            n = ord(rest[k - 1])
+            value = text[start + k:start + k + n]
+            if len(value) == n and '"' not in value and value.lower().startswith(rest[k:].lower()):
+                return k
+        return 0
 
 def git_bytes(*args, check=True):
     proc = subprocess.run(["git", "-c", "core.quotePath=false", *args],

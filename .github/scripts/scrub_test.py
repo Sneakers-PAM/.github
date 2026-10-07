@@ -181,6 +181,17 @@ class DescriptorTest(unittest.TestCase):
         long = GO_PACKAGE + "x" * (200 - len(GO_PACKAGE))
         self.assertEqual(classes('\t"Z\\xc8\\x01' + long + '"'), [])
 
+    def test_options_message_around_go_package_passes(self):
+        inner = "Z" + chr(len(GO_PACKAGE)) + GO_PACKAGE
+        line = '\t"\\x02\\x01B' + chr(len(inner)) + inner + 'b\\x06proto3"'
+        self.assertEqual(classes(line), [])
+
+    def test_options_message_around_a_forbidden_host_is_flagged(self):
+        field = HOST_BAD + "/gen/go/v1;v1"
+        inner = "Z" + chr(len(field)) + field
+        line = '\t"B' + chr(len(inner)) + inner + '"'
+        self.assertEqual(classes(line), ["fqdn"])
+
     def test_length_past_the_literal_is_still_flagged(self):
         self.assertEqual(classes(descriptor(GO_PACKAGE, length=len(GO_PACKAGE) + 20)), ["fqdn"])
 
