@@ -1,0 +1,7 @@
+# Default-branch commits that may lack a Signed-off-by trailer. Reviewed by the org
+# maintainers. One entry per line: <owner>/<repo> <full 40-hex sha> <reason>.
+# Honoured only by a full scan of the default branch, and only for a commit already on it;
+# a pull request or branch push never uses this list. Never add a commit that isn't merged.
+Sneakers-PAM/sneakers-release 065668f2a521245df35ea583b999c1f4c5a92d81 squash merge of a signed PR kept an empty body, so it lost the Signed-off-by (2026-10-07)
+Sneakers-PAM/sneakers-web 4193f624dcae09290da5bfe5828bd0e049755bb5 squash merge of a signed PR kept an empty body, so it lost the Signed-off-by (2026-10-07)
+Sneakers-PAM/sneakers-appliance d16c312948fa39404321106d52bf84a7495d5fc4 squash merge of a signed PR kept an empty body, so it lost the Signed-off-by (2026-10-07)

@@ -461,13 +461,55 @@ def cmd_identifiers(args):
     return report("identifiers", col.findings, lambda f: f"{f.where}: {f.cls}: {f.match}")
 
 
+DCO_EXEMPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dco-exempt.txt")
+DCO_EXEMPT_LINE = re.compile(r"^([\w.-]+/[\w.-]+) ([0-9a-f]{40}) (\S.*)$")
+
+
+def load_dco_exempt(path):
+    """The reviewed list of default-branch commits that may lack a sign-off: {(repo, sha): reason}.
+
+    One entry per line, `<owner>/<repo> <full sha> <reason>`; # starts a comment. Any other
+    line is an error, so a typo or a short sha can't silently exempt the wrong commit.
+    """
+    entries = {}
+    if not os.path.exists(path):
+        return entries
+    with open(path, encoding="utf-8") as fh:
+        for number, raw in enumerate(fh, 1):
+            text = raw.strip()
+            if not text or text.startswith("#"):
+                continue
+            m = DCO_EXEMPT_LINE.match(text)
+            if not m:
+                raise ValueError(f"{path}:{number}: want '<owner>/<repo> <40-hex sha> <reason>'")
+            entries[(m.group(1).lower(), m.group(2))] = m.group(3)
+    return entries
+
+
+def on_branch(sha, tip):
+    return subprocess.run(["git", "merge-base", "--is-ancestor", sha, tip],
+                          capture_output=True).returncode == 0
+
+
 def cmd_dco(args):
+    try:
+        exempt = load_dco_exempt(args.exempt_file)
+    except ValueError as e:
+        print(f"scrub dco: {e}", file=sys.stderr)
+        return 2
+    repo = (args.repo or os.environ.get("GITHUB_REPOSITORY", "")).lower()
     findings = []
     for sha in commits(args.base, args.head):
         body = git("show", "-s", "--format=%B", sha)
         if not SIGNOFF.search(body):
             subject = lines(body)[0].removesuffix("\r")
-            findings.append(Finding("dco", subject, where=f"commit {sha[:12]}"))
+            f = Finding("dco", subject, where=f"commit {sha[:12]}")
+            reason = exempt.get((repo, sha))
+            # Only a full scan of the default branch honours the list, and only for commits
+            # already on it: a PR or a branch push never does, so new commits can't use it.
+            if reason and args.default_branch_tip and not args.base and on_branch(sha, args.default_branch_tip):
+                f.allowed_by = f"dco-exempt ({reason})"
+            findings.append(f)
     return report("dco", findings,
                   lambda f: f'{f.where} "{f.match}": no Signed-off-by trailer')
 
@@ -482,6 +524,12 @@ def main(argv=None):
         if name == "identifiers":
             p.add_argument("--allow-domain", action="append", default=[],
                            help="extra allowed domain(s), space-separated; repeatable")
+        else:
+            p.add_argument("--exempt-file", default=DCO_EXEMPT,
+                           help="the reviewed dco-exempt list (default: next to this script)")
+            p.add_argument("--repo", default="", help="owner/repo; default $GITHUB_REPOSITORY")
+            p.add_argument("--default-branch-tip", default="",
+                           help="set only for a full scan of the default branch; enables the list")
     args = parser.parse_args(argv)
     return cmd_identifiers(args) if args.cmd == "identifiers" else cmd_dco(args)
 
