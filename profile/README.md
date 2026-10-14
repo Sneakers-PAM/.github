@@ -5,7 +5,7 @@
   </picture>
 </p>
 
-# Sneakers-PAM 👟
+# Sneakers-PAM™ 👟
 
 > 🔐 Open-source privileged access management, built as a set of small services.
 
@@ -58,3 +58,7 @@ Kubernetes or as a single-node appliance.
 ## 📄 Licence
 
 [Apache-2.0](https://github.com/Sneakers-PAM/.github/blob/main/LICENSE).
+
+## ™️ Trademarks
+
+Sneakers-PAM™ and the Sneakers-PAM logo are trademarks of the rabbit hole tech, llc. The code is licensed under Apache-2.0; the licence does not grant rights to the names or logos. See [TRADEMARKS.md](https://github.com/Sneakers-PAM/.github/blob/main/TRADEMARKS.md) for the usage policy. Applications to register these trademarks are being prepared; full registered (®) protection is pending until they are granted.
