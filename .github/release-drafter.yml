@@ -3,6 +3,12 @@
 # the categories, version resolver and autolabeler live in one place. The autolabeler
 # derives the categorizing label from the conventional-commit PR title;
 # job-label-checker is the backstop.
+#
+# Categories carry their own `when` conditions and `semver-increment`, and a
+# `pre-exclude` category drops skip-changelog pull requests: the new-format
+# replacement for the deprecated per-category `labels` shorthand, the
+# top-level `exclude-labels` and the `version-resolver` block
+# (release-drafter/release-drafter#1558).
 name-template: 'v$RESOLVED_VERSION'
 tag-template: 'v$RESOLVED_VERSION'
 template: |
@@ -14,27 +20,42 @@ template: |
 
   **Full Changelog**: https://github.com/$OWNER/$REPOSITORY/compare/$PREVIOUS_TAG...v$RESOLVED_VERSION
 categories:
+  - type: pre-exclude
+    when:
+      - labels: [skip-changelog]
   - title: 💥 Breaking Changes
-    labels: [breaking]
+    semver-increment: major
+    when:
+      - labels: [breaking]
   - title: 🚀 Features
-    labels: [enhancement]
+    semver-increment: minor
+    when:
+      - labels: [enhancement]
   - title: 🐛 Bug Fixes
-    labels: [bug, fix]
+    when:
+      - labels: [bug, fix]
   - title: ⚡ Performance
-    labels: [performance]
+    when:
+      - labels: [performance]
   - title: ⚠️ Changes
-    labels: [refactor, changed]
+    when:
+      - labels: [refactor, changed]
   - title: ⛔️ Deprecated
-    labels: [deprecated]
+    when:
+      - labels: [deprecated]
   - title: 🗑 Removed
-    labels: [removed]
+    when:
+      - labels: [removed]
   - title: 🔐 Security
-    labels: [security]
+    when:
+      - labels: [security]
   - title: 📄 Documentation
-    labels: [documentation]
+    when:
+      - labels: [documentation]
   - title: 🧩 Dependency Updates
-    labels: [dependencies]
     collapse-after: 5
+    when:
+      - labels: [dependencies]
 change-template: '- $TITLE @$AUTHOR (#$NUMBER)'
 change-title-escapes: '\<*_&'
 # Bot authors render as `@name[bot]`, which GitHub markdown does not autolink
@@ -43,14 +64,6 @@ change-title-escapes: '\<*_&'
 replacers:
   - search: '/@github-actions\[bot\]/g'
     replace: '[@github-actions](https://github.com/apps/github-actions)'
-version-resolver:
-  major:
-    labels: [breaking]
-  minor:
-    labels: [enhancement]
-  patch:
-    labels: [fix, bug, performance, refactor, changed, deprecated, removed, security, documentation, dependencies]
-  default: patch
 autolabeler:
   - label: breaking
     title:
@@ -76,5 +89,3 @@ autolabeler:
     title:
       - '/^(ci|test|style)(\(.+\))?:/'
       - '/^chore(?!\(deps)(\(.+\))?:/'
-exclude-labels:
-  - skip-changelog
