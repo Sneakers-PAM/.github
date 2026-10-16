@@ -115,9 +115,9 @@ PUBLIC_DOMAINS = {
     "slsa.dev", "openssf.org", "bestpractices.dev", "fonts.googleapis.com",
     "fonts.gstatic.com", "unpkg.com", "cdn.jsdelivr.net", "cluster.local",
 }
-# The project's own domain, accepted as a host name (and its subdomains) in
-# every repo. Emails at it are still flagged.
-ORG_DOMAINS = {"sneakers-pam.com"}
+# The project's own domain and its sibling products' domains, accepted as host
+# names (and their subdomains) in every repo. Emails at them are still flagged.
+ORG_DOMAINS = {"sneakers-pam.com", "steward-grc.com", "brigade-itsm.com"}  # scrub:allow=fqdn
 
 DOCS_EXAMPLES = "docs/examples/"
 

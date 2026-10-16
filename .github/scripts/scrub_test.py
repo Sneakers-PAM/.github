@@ -147,6 +147,22 @@ class FqdnTest(unittest.TestCase):
     def test_org_domain_emails_flagged(self):
         self.assertEqual(classes(j("someone", "@sneakers-pam.com")), ["email"])
 
+    def test_sibling_org_domains_allowed_without_input(self):
+        for text in ("steward-grc.com",  # scrub:allow=fqdn
+                     "https://docs.steward-grc.com/install",  # scrub:allow=fqdn
+                     "Steward-GRC.com",  # scrub:allow=fqdn
+                     "brigade-itsm.com",  # scrub:allow=fqdn
+                     "https://www.brigade-itsm.com/",  # scrub:allow=fqdn
+                     "Brigade-ITSM.com"):  # scrub:allow=fqdn
+            self.assertEqual(classes(text), [], text)
+
+    def test_sibling_org_domain_look_alikes_and_emails_flagged(self):
+        for text in (j("not", "steward-grc.com"),  # scrub:allow=fqdn
+                     j("steward-grc", ".co"),  # scrub:allow=fqdn
+                     j("brigade-itsm.com", ".attacker", ".io")):  # scrub:allow=fqdn
+            self.assertEqual(classes(text), ["fqdn"], text)
+        self.assertEqual(classes(j("someone", "@brigade-itsm.com")), ["email"])  # scrub:allow=fqdn,email
+
     def test_mixed_case_hosts_flagged(self):
         for text in (j("Dc01", ".Corp", ".Local"), j("https://Wiki", ".Acme-Corp", ".Com/x"),
                      j("Corp", ".Local")):
