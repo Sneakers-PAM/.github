@@ -1,0 +1,254 @@
+# Quality: the heavy Go gates as ADVISORY checks on a PR. A repo opts in by
+# calling it from its checks.yml with the job id `quality`:
+#
+#   jobs:
+#     quality:
+#       if: github.event_name == 'pull_request' && github.event.pull_request.draft != true
+#       permissions:
+#         contents: read
+#       uses: Sneakers-PAM/.github/.github/workflows/quality.yml@main
+#
+# One job per tool, so they run side by side:
+#   - quality / Lint (advisory): golangci-lint, with the repo's .golangci.yml
+#     when it has one;
+#   - quality / SAST (advisory): gosec, generated files skipped;
+#   - quality / Vulnerabilities (advisory): govulncheck, known vulnerabilities
+#     the code reaches in the module's dependencies;
+#   - quality / Modernize (advisory): the Go modernize analyzer, test files
+#     included.
+#
+# Findings never fail a job: the tool step continues on error, and
+# quality-report.sh turns its output into warning annotations on the diff and
+# a section of the job summary. Each job also continues on error, so even a
+# broken install never fails the caller's run. These checks report; they
+# never gate. Never add them to a ruleset's required status checks.
+#
+# golangci-lint and gosec are downloaded at pinned versions and checked
+# against the SHA-256 in each release's checksums file; govulncheck and
+# modernize come through go install, which checks each module against the Go
+# checksum database. setup-go caches the module and build caches, and the lint
+# job caches golangci-lint's own. It takes no secrets.
+name: quality
+
+on:
+  workflow_call:
+    inputs:
+      tools-ref:
+        description: Ref of Sneakers-PAM/.github to take quality-report.sh from.
+        type: string
+        default: main
+      timeout-minutes:
+        description: Timeout of each job.
+        type: number
+        default: 15
+
+env:
+  GOLANGCI_LINT_VERSION: 2.14.0
+  GOLANGCI_LINT_SHA256: ab90aeb7b066f92a33415b638a50fe5344bbb75a0d32ad30cc248d88f81032ab
+  GOSEC_VERSION: 2.29.0
+  GOSEC_SHA256: 6431b119741c1f4a50fdfcf94e782e16b9e642afc8c7fa9b5d39d48bf3003095
+  GOVULNCHECK_VERSION: v1.8.0
+  MODERNIZE_VERSION: v0.51.0
+  TOOLS: .quality-tools
+
+jobs:
+  lint:
+    name: Lint (advisory)
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check out the report script
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Sneakers-PAM/.github
+          ref: ${{ inputs.tools-ref }}
+          path: ${{ env.TOOLS }}
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Cache golangci-lint
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/golangci-lint
+          key: golangci-lint-${{ env.GOLANGCI_LINT_VERSION }}-${{ hashFiles('go.sum', '.golangci.yml', '.golangci.yaml') }}
+          restore-keys: golangci-lint-${{ env.GOLANGCI_LINT_VERSION }}-
+
+      - name: Install golangci-lint
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/golangci-lint"
+          mkdir -p "$dir"
+          tgz="$RUNNER_TEMP/golangci-lint.tar.gz"
+          curl -fsSL -o "$tgz" \
+            "https://github.com/golangci/golangci-lint/releases/download/v${GOLANGCI_LINT_VERSION}/golangci-lint-${GOLANGCI_LINT_VERSION}-linux-amd64.tar.gz"
+          echo "$GOLANGCI_LINT_SHA256  $tgz" | sha256sum -c -
+          tar -xzf "$tgz" -C "$dir" --strip-components=1 \
+            "golangci-lint-${GOLANGCI_LINT_VERSION}-linux-amd64/golangci-lint"
+          echo "$dir" >> "$GITHUB_PATH"
+
+      - name: golangci-lint
+        id: tool
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          golangci-lint run --output.text.path=stdout --output.text.print-issued-lines=false \
+            --output.text.colors=false ./... 2>&1 | tee "$RUNNER_TEMP/out.txt"
+
+      - name: Report
+        if: ${{ !cancelled() }}
+        env:
+          OUTCOME: ${{ steps.tool.outcome }}
+        run: bash "$TOOLS/.github/scripts/quality-report.sh" golangci-lint "$RUNNER_TEMP/out.txt" "$OUTCOME"
+
+  sast:
+    name: SAST (advisory)
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check out the report script
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Sneakers-PAM/.github
+          ref: ${{ inputs.tools-ref }}
+          path: ${{ env.TOOLS }}
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Install gosec
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/gosec"
+          mkdir -p "$dir"
+          tgz="$RUNNER_TEMP/gosec.tar.gz"
+          curl -fsSL -o "$tgz" \
+            "https://github.com/securego/gosec/releases/download/v${GOSEC_VERSION}/gosec_${GOSEC_VERSION}_linux_amd64.tar.gz"
+          echo "$GOSEC_SHA256  $tgz" | sha256sum -c -
+          tar -xzf "$tgz" -C "$dir" gosec
+          echo "$dir" >> "$GITHUB_PATH"
+
+      - name: gosec
+        id: tool
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          gosec -fmt=golint -exclude-generated -quiet ./... 2>&1 | tee "$RUNNER_TEMP/out.txt"
+
+      - name: Report
+        if: ${{ !cancelled() }}
+        env:
+          OUTCOME: ${{ steps.tool.outcome }}
+        run: bash "$TOOLS/.github/scripts/quality-report.sh" gosec "$RUNNER_TEMP/out.txt" "$OUTCOME"
+
+  vulnerabilities:
+    name: Vulnerabilities (advisory)
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check out the report script
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Sneakers-PAM/.github
+          ref: ${{ inputs.tools-ref }}
+          path: ${{ env.TOOLS }}
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Install govulncheck
+        run: |
+          set -euo pipefail
+          go install "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: govulncheck
+        id: tool
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          govulncheck ./... 2>&1 | tee "$RUNNER_TEMP/out.txt"
+
+      - name: Report
+        if: ${{ !cancelled() }}
+        env:
+          OUTCOME: ${{ steps.tool.outcome }}
+        run: bash "$TOOLS/.github/scripts/quality-report.sh" govulncheck "$RUNNER_TEMP/out.txt" "$OUTCOME"
+
+  modernize:
+    name: Modernize (advisory)
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check out the report script
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Sneakers-PAM/.github
+          ref: ${{ inputs.tools-ref }}
+          path: ${{ env.TOOLS }}
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Install modernize
+        run: |
+          set -euo pipefail
+          go install "golang.org/x/tools/go/analysis/passes/modernize/cmd/modernize@${MODERNIZE_VERSION}"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: modernize
+        id: tool
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          modernize -test ./... 2>&1 | tee "$RUNNER_TEMP/out.txt"
+
+      - name: Report
+        if: ${{ !cancelled() }}
+        env:
+          OUTCOME: ${{ steps.tool.outcome }}
+        run: bash "$TOOLS/.github/scripts/quality-report.sh" modernize "$RUNNER_TEMP/out.txt" "$OUTCOME"
