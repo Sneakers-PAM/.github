@@ -38,6 +38,9 @@ Leave out `--base` to scan the whole history.
   backslash or newline in the name) can't hide its content; a blob that can't be read fails the
   run (exit 2). Diffs always run with `--text`, so `.gitattributes` can't hide a file. A file whose content has
   a NUL byte is treated as binary, and its ASCII, UTF-16LE and UTF-16BE string runs are scanned.
+  Font files (`.ttf`, `.otf`, `.ttc`, `.woff`, `.woff2`) are the exception: their strings are glyph names
+  and a licence line, so only their path is scanned. The host named in the SIL Open Font License
+  is a public domain.
 - **dco** requires `Signed-off-by: Name <email>` on every non-merge commit. The one exception is
   `dco-exempt.txt`: reviewed `<owner>/<repo> <full sha> <reason>` entries for commits already
   on a default branch (for example a squash merge that lost its trailer). It's honoured only by a
