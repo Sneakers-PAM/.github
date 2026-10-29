@@ -5,3 +5,4 @@
 Sneakers-PAM/sneakers-release 065668f2a521245df35ea583b999c1f4c5a92d81 squash merge of a signed PR kept an empty body, so it lost the Signed-off-by (2026-10-07)
 Sneakers-PAM/sneakers-web 4193f624dcae09290da5bfe5828bd0e049755bb5 squash merge of a signed PR kept an empty body, so it lost the Signed-off-by (2026-10-07)
 Sneakers-PAM/sneakers-appliance d16c312948fa39404321106d52bf84a7495d5fc4 squash merge of a signed PR kept an empty body, so it lost the Signed-off-by (2026-10-07)
+Sneakers-PAM/sneakers-web 499e43fa887e5d2babffa5e08fe952c5c84837f8 squash merge of a signed PR kept the PR body but lost the Signed-off-by (2026-10-08)
