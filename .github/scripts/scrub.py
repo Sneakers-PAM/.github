@@ -18,7 +18,7 @@ Files are listed with NUL-separated plumbing and read by blob id, so no path
 blob that can't be read is an error (exit 2). Diffs always run with --text, so
 .gitattributes can't hide a file. A file whose content has a NUL byte is
 binary: its ASCII, UTF-16LE and UTF-16BE string runs are scanned instead of its
-lines. Compressed content (zip, docx, jar, gz, PNG
+lines, except in font files, whose strings are glyph names. Compressed content (zip, docx, jar, gz, PNG
 zTXt and the like) is not unpacked; scrub 2 covers it.
 
 It flags private addresses (private-ip, also when glued to a name such as
@@ -114,6 +114,7 @@ PUBLIC_DOMAINS = {
     "typescriptlang.org", "mozilla.org", "gnu.org", "k0sproject.io", "sigstore.dev",
     "slsa.dev", "openssf.org", "bestpractices.dev", "fonts.googleapis.com",
     "fonts.gstatic.com", "unpkg.com", "cdn.jsdelivr.net", "cluster.local",
+    "sil.org",  # scrub:allow=fqdn
 }
 # The project's own domain and its sibling products' domains, accepted as host
 # names (and their subdomains) in every repo. Emails at them are still flagged.
@@ -126,6 +127,10 @@ DOCS_EXAMPLES = "docs/examples/"
 # types are checked, so marker bytes in other binaries never match by chance.
 ASSET_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".heic", ".tif",
                     ".tiff", ".ico", ".svg", ".pdf")
+# Typefaces are vendor files whose strings are glyph names, a copyright line and the licence
+# address, never a place a private identifier lives. Their path is still scanned, and every
+# other binary file has its string runs scanned as before.
+FONT_EXTENSIONS = (".ttf", ".otf", ".ttc", ".woff", ".woff2")
 PROVENANCE = re.compile(rb"c2pa|C2PA|caBX|jumb|contentauth")
 SIGNOFF = re.compile(r"^Signed-off-by: \S.* <[^<>\s]+@[^<>\s]+>\s*$", re.M)
 
@@ -372,6 +377,8 @@ class Collector:
                 if m:
                     self.provenance(path, f"{shown} (asset, {label})", m.group(0).decode("ascii"))
             if b"\x00" in data:
+                if path.lower().endswith(FONT_EXTENSIONS):
+                    continue
                 # Compiled files, images and UTF-16 text: scan their string runs.
                 for run in string_runs(data):
                     self.add(run, f"{shown} (binary, {label})", path, binary=True,

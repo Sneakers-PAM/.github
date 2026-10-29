@@ -124,6 +124,13 @@ class FqdnTest(unittest.TestCase):
                      "https://developercertificate.org/"):
             self.assertEqual(classes(text), [], text)
 
+    def test_the_font_licence_host_passes(self):
+        for text in (j("http://scripts.sil", ".org/OFL"), j("https://www.sil", ".org/")):
+            self.assertEqual(classes(text), [], text)
+
+    def test_a_lookalike_private_host_still_fails(self):
+        self.assertEqual(classes(j("scripts.sil", ".corp", ".invalid")), ["fqdn"])
+
     def test_code_and_file_names_pass(self):
         for text in ("log.info(\"x\")", "config.yaml", "install.sh", "main.go",
                      "README.md", "os.Stdout.Write", "re.test(s)"):
@@ -385,6 +392,28 @@ class EndToEndTest(unittest.TestCase):
         self.assertIn("x.bin (binary, commit", ids.stdout)
         self.assertIn("home-path", ids.stdout)
         self.assertIn("1 finding(s)", ids.stdout)
+
+    def commit_binary(self, name):
+        glyph_names = j("acute", ".case").encode() + b"\x00" + j("grave", ".cap").encode()
+        blob = b"\x00\x01\x00\x00" + glyph_names + b"\x00\xff\xfe"
+        with open(os.path.join(self.repo, name), "wb") as fh:
+            fh.write(blob)
+        git(self.repo, "add", name)
+        git(self.repo, "-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "test: add" + SIGNOFF)
+        return git(self.repo, "rev-parse", "HEAD")
+
+    def test_font_binaries_are_not_scanned_for_glyph_names(self):
+        for name in ("Face.ttf", "Face.OTF", "Face.ttc", "Face.woff", "Face.woff2"):
+            head = self.commit_binary(name)
+            ids = self.run_scrub("identifiers", "--base", self.base, "--head", head)
+            self.assertEqual(ids.returncode, 0, name + ids.stdout + ids.stderr)
+            self.base = head
+
+    def test_the_same_bytes_in_another_binary_are_still_flagged(self):
+        head = self.commit_binary("Face.bin")
+        ids = self.run_scrub("identifiers", "--base", self.base, "--head", head)
+        self.assertEqual(ids.returncode, 1, ids.stdout + ids.stderr)
+        self.assertIn("Face.bin (binary, commit", ids.stdout)
 
     def test_gitattributes_cannot_hide_text(self):
         self.commit(".gitattributes", "* -diff\n", "chore: attrs" + SIGNOFF)
