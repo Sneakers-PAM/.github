@@ -6,3 +6,5 @@ Sneakers-PAM/sneakers-release 065668f2a521245df35ea583b999c1f4c5a92d81 squash me
 Sneakers-PAM/sneakers-web 4193f624dcae09290da5bfe5828bd0e049755bb5 squash merge of a signed PR kept an empty body, so it lost the Signed-off-by (2026-10-07)
 Sneakers-PAM/sneakers-appliance d16c312948fa39404321106d52bf84a7495d5fc4 squash merge of a signed PR kept an empty body, so it lost the Signed-off-by (2026-10-07)
 Sneakers-PAM/sneakers-web 499e43fa887e5d2babffa5e08fe952c5c84837f8 squash merge of a signed PR kept the PR body but lost the Signed-off-by (2026-10-08)
+Sneakers-PAM/sneakers-connector b6eaafa9876363cfee5abe5e498eb088fa307f90 squash merge of a signed PR (10 of 10 commits signed) lost the Signed-off-by (2026-10-02)
+Sneakers-PAM/sneakers-sshbroker 3be8a4d9e1aba1560736eca5d5b7ecbc58c43884 squash merge of a signed PR (1 of 1 commits signed) lost the Signed-off-by (2026-10-02)
