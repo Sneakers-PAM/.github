@@ -33,6 +33,10 @@ Kubernetes or as a single-node appliance.
 
 - [sneakers-web](https://github.com/Sneakers-PAM/sneakers-web): the web apps in one repo: staff, admin, appliance admin, maintenance, docs and the UI kit.
 
+## 🧪 Development
+
+- [sneakers-mock-server](https://github.com/Sneakers-PAM/sneakers-mock-server): a standalone in-memory mock of the whole gateway API, shared by the web and mobile apps.
+
 ## 📦 Release and appliance
 
 - [sneakers-release](https://github.com/Sneakers-PAM/sneakers-release): the release manifest, with every service, k0s and third-party component pinned to one version.
