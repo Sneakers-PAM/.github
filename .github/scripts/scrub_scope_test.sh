@@ -70,7 +70,8 @@ resolved() { sed -n "s/^$1=//p" "$work/out"; }
 step() {
   local rc=0
   (cd "$work/repo" && env BASE="$(resolved base)" HEAD_SHA="$(resolved head)" TOOLS="$tools" \
-    ALLOWED_DOMAINS= PR_TITLE= PR_BODY= bash -eo pipefail "$work/$1.sh") >"$2" 2>&1 || rc=$?
+    ALLOW_REF="$(resolved allow_ref)" ALLOWED_DOMAINS= PR_TITLE= PR_BODY= \
+    bash -eo pipefail "$work/$1.sh") >"$2" 2>&1 || rc=$?
   echo "$rc"
 }
 
@@ -198,6 +199,60 @@ rc="$(range "$work/schedule.log" EVENT=schedule EVENT_SHA="$base_tip")"
 expect_exit "a scheduled run resolves" 0 "$rc"
 expect_exit "a scheduled run reads the full history" "" "$(resolved base)"
 expect_exit "a scheduled run reads the checked-out commit" "$base_tip" "$(resolved head)"
+
+# --- the allowlist (.github/scrub-allow.txt), read from the base side only ---
+allow_file=.github/scrub-allow.txt
+open_line() { # open_line <description> <yes|no> <path> <log>: an unallowed finding in <path>?
+  if grep -q "^$3:" "$4"; then got=yes; else got=no; fi
+  expect_exit "$1" "$2" "$got"
+}
+mkdir -p "$work/repo/.github"
+printf 'private-ip %s lab/*  # the test address\n' "$private_ip" >"$work/repo/$allow_file"
+allow_base="$(commit "chore: allow the test address")"
+
+git -C "$work/repo" switch -q -c lab "$allow_base"
+mkdir -p "$work/repo/lab"
+printf 'host = %s\n' "$private_ip" >"$work/repo/lab/a.txt"
+printf 'host = %s\n' "$private_ip" >"$work/repo/elsewhere.txt"
+lab_head="$(commit "feat: use the test address")"
+range "$work/al.log" EVENT=pull_request PR_BASE="$allow_base" PR_HEAD="$lab_head" EVENT_SHA="$lab_head" >/dev/null
+expect_exit "a PR reads the allowlist at its base" "$allow_base" "$(resolved allow_ref)"
+step identifiers "$work/al-id.log" >/dev/null
+expect_contains "a base entry is honoured as a warning naming the entry" "allowed by $allow_file@${allow_base:0:12}:1 (private-ip" "$work/al-id.log"
+open_line "a base entry allows its value in its path" no lab/a.txt "$work/al-id.log"
+open_line "the same value in another path still fails" yes elsewhere.txt "$work/al-id.log"
+
+git -C "$work/repo" switch -q -c sneaky "$base_tip"
+mkdir -p "$work/repo/.github" "$work/repo/lab"
+printf 'private-ip %s lab/*  # the test address\n' "$private_ip" >"$work/repo/$allow_file"
+printf 'host = %s\n' "$private_ip" >"$work/repo/lab/a.txt"
+sneaky_head="$(commit "feat: allow and use the address at once")"
+range "$work/sn.log" EVENT=pull_request PR_BASE="$base_tip" PR_HEAD="$sneaky_head" EVENT_SHA="$sneaky_head" >/dev/null
+step identifiers "$work/sn-id.log" >/dev/null
+open_line "an entry only on the PR branch, not its base, allows nothing" yes lab/a.txt "$work/sn-id.log"
+
+git -C "$work/repo" switch -q -c broken "$allow_base"
+printf 'private-ip %s lab/*\n' "$private_ip" >"$work/repo/$allow_file"
+broken_head="$(commit "chore: drop the reason")"
+range "$work/br.log" EVENT=pull_request PR_BASE="$allow_base" PR_HEAD="$broken_head" EVENT_SHA="$broken_head" >/dev/null
+expect_exit "a PR's malformed copy of the list fails the run" 2 "$(step identifiers "$work/br-id.log")"
+expect_contains "it says why" "needs a # reason" "$work/br-id.log"
+git -C "$work/repo" switch -q main
+
+range "$work/al-main.log" EVENT=push REF=refs/heads/main PUSH_BEFORE="$allow_base" PUSH_AFTER="$lab_head" EVENT_SHA="$lab_head" >/dev/null
+expect_exit "a push to main reads the list at the commit before the push" "$allow_base" "$(resolved allow_ref)"
+range "$work/al-branch.log" EVENT=push REF=refs/heads/lab PUSH_BEFORE="$allow_base" PUSH_AFTER="$lab_head" EVENT_SHA="$lab_head" >/dev/null
+expect_exit "a push to another branch reads the list at before" "$allow_base" "$(resolved allow_ref)"
+range "$work/al-new.log" EVENT=push REF=refs/heads/lab PUSH_BEFORE=0000000000000000000000000000000000000000 PUSH_AFTER="$lab_head" EVENT_SHA="$lab_head" >/dev/null
+expect_exit "a new branch's first push reads no list" "" "$(resolved allow_ref)"
+range "$work/al-sched.log" EVENT=schedule REF=refs/heads/main EVENT_SHA="$allow_base" >/dev/null
+expect_exit "a scheduled run on main reads the list at the reviewed tip" "$allow_base" "$(resolved allow_ref)"
+range "$work/al-sched2.log" EVENT=schedule REF=refs/heads/lab EVENT_SHA="$lab_head" >/dev/null
+expect_exit "a scheduled run on another branch reads no list" "" "$(resolved allow_ref)"
+range "$work/al-mg.log" EVENT=merge_group MG_BASE="$allow_base" MG_HEAD="$lab_head" EVENT_SHA="$lab_head" >/dev/null
+expect_exit "a merge group reads the list at its base" "$allow_base" "$(resolved allow_ref)"
+range "$work/al-full.log" EVENT=pull_request FULL=true PR_BASE="$allow_base" PR_HEAD="$lab_head" EVENT_SHA="$lab_head" >/dev/null
+expect_exit "full-history still reads the list at the PR base" "$allow_base" "$(resolved allow_ref)"
 
 echo
 if [[ "$fail" == 0 ]]; then

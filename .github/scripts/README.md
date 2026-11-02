@@ -82,8 +82,47 @@ can simply be removed.
   name, subdomains included; emails at it are still flagged), always pass. Callers add other domains
   with the workflow's `allowed-domains` input. Placeholder hosts in code and tests stay on
   `example.org`.
+- A repo's reviewed allowlist, `.github/scrub-allow.txt`, covers what can't carry a marker:
+  generated code, vendored files, a known test address. See below.
 
 Every honoured allow is reported as a warning, both in the log and in the job summary.
+
+### The allowlist file
+
+One entry per line, with a reason on the same line or on a comment line directly above it:
+
+```text
+# <reason>
+<class> <exact value> <path glob>
+<class> <exact value> <path glob>  # <reason>
+```
+
+- **Class:** one of the scanner's classes, `private-ip`, `email`, `home-path` or `fqdn`, or
+  `ai-tell` for the hub AI-tell list that the local pre-push gate runs (this scanner accepts it
+  and ignores it). `secret` is refused: a known fake secret takes `scrub:allow=secret` on its own
+  line. Provenance and the local term lists have no allow at all.
+- **Value:** exactly what the finding reports, case included. No wildcards. Write a space as `%20`
+  and `%` as `%25` (any byte can be written as `%XX`), so a phrase stays one field.
+- **Path glob:** a relative glob in Python `fnmatch` style matched against the repo path; `*` also
+  crosses `/`, so `gen/*.go` covers every Go file under `gen/`. A glob of only wildcards is refused.
+- **Generated code:** host names in files with the `// Code generated ... DO NOT EDIT.` header are
+  already warnings, so they need no entry; the list covers every other class there.
+- **Where it counts:** added lines of text files only. Never commit messages, authors, paths,
+  binary string runs, tag text or PR title and body.
+- **Base side only:** `scrub.yml` reads the file at the PR or merge group base, at the commit before
+  a push, or at the checked-out tip for a scheduled or manual run on the default branch. It never
+  reads the copy being tested, so a new entry counts only after its own PR is merged. The PR's
+  copy is checked for errors, and a malformed line fails the run (exit 2).
+- **The file itself:** a well-formed entry line in `.github/scrub-allow.txt` allows its own value on
+  that line, so the PR that adds an entry can pass. Its reason and every other line are still
+  scanned.
+
+Each honoured entry is reported as a warning naming the file, the base commit and the line.
+
+Locally, `scrub.py identifiers --allow-file <file>` applies a list and `--check-allow-file <file>`
+only checks one. A local pre-push gate reads the same file from the remote's default branch.
+Per-clone allow settings in such a gate aren't reviewed, so agents never use them; a change to what's
+allowed goes through this file and its review.
 
 ## Limits
 

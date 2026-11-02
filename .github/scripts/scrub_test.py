@@ -603,6 +603,201 @@ class EndToEndTest(unittest.TestCase):
             self.assertEqual(dco.returncode, 0, dco.stdout + dco.stderr)
 
 
+HOST_GEN = j("api.vendor", "thing", ".com")
+
+
+class AllowFileParseTest(unittest.TestCase):
+    def parse(self, text):
+        return scrub.parse_allowlist(text)
+
+    def test_reason_on_the_same_line_or_the_line_above(self):
+        allow = self.parse(f"fqdn {HOST_GEN} gen/*.go  # generated client docs\n"
+                           "# the QEMU user-network host\n"
+                           f"private-ip {IP_10} test/image/*\n")
+        self.assertEqual([(e.cls, e.value, e.glob) for e in allow.entries],
+                         [("fqdn", HOST_GEN, "gen/*.go"), ("private-ip", IP_10, "test/image/*")])
+        self.assertEqual(allow.entries[1].line, 3)
+
+    def test_ai_tell_entries_parse_with_percent_escapes(self):
+        allow = self.parse("ai-tell some%20phrase gen/*  # protoc output\n")
+        self.assertEqual(allow.entries[0].value, "some phrase")
+
+    def test_malformed_lines_fail(self):
+        bad = {
+            "no reason": f"fqdn {HOST_GEN} gen/*\n",
+            "reason two lines up": f"# why\n\nfqdn {HOST_GEN} gen/*\n",
+            "empty reason": f"fqdn {HOST_GEN} gen/*  #\n",
+            "two fields": f"fqdn {HOST_GEN}  # why\n",
+            "four fields": f"fqdn {HOST_GEN} gen/* more  # why\n",
+            "unknown class": f"provenance c2pa gen/*  # why\n",
+            "term class": f"term x gen/*  # why\n",
+            "wildcard value": "fqdn *.vendor.com gen/*  # why\n",
+            "bare star glob": f"fqdn {HOST_GEN} *  # why\n",
+            "absolute glob": f"fqdn {HOST_GEN} /gen/*  # why\n",
+            "bad escape": "ai-tell some%2phrase gen/*  # why\n",
+        }
+        for name, text in bad.items():
+            with self.assertRaises(ValueError, msg=name):
+                self.parse(text)
+
+    def test_secret_class_refused_with_the_marker_named(self):
+        with self.assertRaises(ValueError) as cm:
+            self.parse("secret AKIAXXXX gen/*  # a fake\n")
+        self.assertIn("scrub:allow=secret", str(cm.exception))
+
+    def test_error_names_the_line(self):
+        with self.assertRaises(ValueError) as cm:
+            self.parse(f"# ok\nfqdn {HOST_GEN} gen/*  # ok\nfqdn x\n")
+        self.assertIn(":3:", str(cm.exception))
+
+    def test_match_is_exact_and_limited_by_the_glob(self):
+        allow = self.parse(f"fqdn {HOST_GEN} gen/*.go  # why\n")
+        self.assertIsNotNone(allow.match("fqdn", HOST_GEN, "gen/go/a/b.go"))
+        self.assertIsNone(allow.match("fqdn", HOST_GEN, "internal/a.go"))
+        self.assertIsNone(allow.match("fqdn", HOST_GEN, "gen/go/a/b.txt"))
+        self.assertIsNone(allow.match("fqdn", "x." + HOST_GEN, "gen/a.go"))
+        self.assertIsNone(allow.match("fqdn", HOST_GEN.upper(), "gen/a.go"))
+        self.assertIsNone(allow.match("email", HOST_GEN, "gen/a.go"))
+
+    def test_only_file_lines_are_allowed(self):
+        allow = self.parse(f"fqdn {HOST_GEN} *.txt  # why\n")
+        for f, want in ((scrub.Finding("fqdn", HOST_GEN, file="a.txt", line=1), True),
+                        (scrub.Finding("fqdn", HOST_GEN, file="a.txt"), False),
+                        (scrub.Finding("fqdn", HOST_GEN), False)):
+            self.assertEqual(allow.allow(f), want, f)
+        f = scrub.Finding("fqdn", HOST_GEN, file="a.txt", line=1)
+        allow.allow(f)
+        self.assertEqual(f.allowed_by, f".github/scrub-allow.txt:1 (fqdn {HOST_GEN} *.txt)")
+
+
+class AllowFileEndToEndTest(unittest.TestCase):
+    setUp = EndToEndTest.setUp
+    tearDown = EndToEndTest.tearDown
+    run_scrub = EndToEndTest.run_scrub
+
+    def write(self, name, content):
+        path = os.path.join(self.repo, name)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as fh:
+            fh.write(content)
+
+    def commit(self, files, message="feat: add" + SIGNOFF):
+        for name, content in files.items():
+            self.write(name, content)
+        git(self.repo, "add", "-A")
+        git(self.repo, "-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", message)
+        return git(self.repo, "rev-parse", "HEAD")
+
+    def allow_file(self, text):
+        path = self.tmp.name + "-allow.txt"
+        with open(path, "w") as fh:
+            fh.write(text)
+        self.addCleanup(os.remove, path)
+        return path
+
+    def test_listed_value_passes_in_its_path_as_a_warning(self):
+        head = self.commit({"gen/a.go": "// see https://" + HOST_GEN + "/x\n"})
+        allow = self.allow_file(f"fqdn {HOST_GEN} gen/*.go  # generated docs\n")
+        summary = os.path.join(self.repo, ".summary")
+        ids = self.run_scrub("identifiers", "--base", self.base, "--head", head,
+                             "--allow-file", allow,
+                             env={"GITHUB_ACTIONS": "true", "GITHUB_STEP_SUMMARY": summary})
+        self.assertEqual(ids.returncode, 0, ids.stdout + ids.stderr)
+        self.assertIn("allowed by .github/scrub-allow.txt:1 (fqdn", ids.stdout)
+        self.assertIn("::warning file=gen/a.go,line=1,", ids.stdout)
+
+    def test_the_label_names_where_the_list_came_from(self):
+        head = self.commit({"gen/a.go": HOST_GEN + "\n"})
+        allow = self.allow_file(f"fqdn {HOST_GEN} gen/*  # why\n")
+        ids = self.run_scrub("identifiers", "--base", self.base, "--head", head,
+                             "--allow-file", allow, "--allow-label", "scrub-allow.txt@abc123")
+        self.assertEqual(ids.returncode, 0, ids.stdout + ids.stderr)
+        self.assertIn("allowed by scrub-allow.txt@abc123:1 (fqdn", ids.stdout)
+
+    def test_the_same_value_in_another_path_still_fails(self):
+        head = self.commit({"gen/a.go": HOST_GEN + "\n", "internal/b.go": HOST_GEN + "\n"})
+        allow = self.allow_file(f"fqdn {HOST_GEN} gen/*  # why\n")
+        ids = self.run_scrub("identifiers", "--base", self.base, "--head", head,
+                             "--allow-file", allow)
+        self.assertEqual(ids.returncode, 1, ids.stdout + ids.stderr)
+        self.assertIn("internal/b.go:1", ids.stdout)
+        self.assertIn("1 finding(s)", ids.stdout)
+
+    def test_not_honoured_in_messages_paths_binaries_or_pr_text(self):
+        allow = self.allow_file(f"private-ip {IP_10} d/*  # why\n")
+        head = self.commit({"d/" + IP_10 + ".txt": "clean\n"}, "fix: reach " + IP_10 + SIGNOFF)
+        with open(os.path.join(self.repo, "d", "x.bin"), "wb") as fh:
+            fh.write(b"\x00\x01host " + IP_10.encode() + b"\x00")
+        git(self.repo, "add", "-A")
+        git(self.repo, "-c", "core.hooksPath=/dev/null", "commit", "-q", "-m", "feat: bin" + SIGNOFF)
+        head = git(self.repo, "rev-parse", "HEAD")
+        ids = self.run_scrub("identifiers", "--base", self.base, "--head", head,
+                             "--allow-file", allow,
+                             env={"PR_TITLE": "fix: " + IP_10, "PR_BODY": "see " + IP_10})
+        self.assertEqual(ids.returncode, 1, ids.stdout + ids.stderr)
+        for where in ("(path,", "commit message", "(binary,", "PR title", "PR body:1"):
+            self.assertIn(where, ids.stdout)
+        self.assertNotIn("allowed by", ids.stdout)
+
+    def test_malformed_list_is_an_error(self):
+        head = self.commit({"gen/a.go": "clean\n"})
+        allow = self.allow_file(f"fqdn {HOST_GEN} gen/*\n")
+        ids = self.run_scrub("identifiers", "--base", self.base, "--head", head,
+                             "--allow-file", allow)
+        self.assertEqual(ids.returncode, 2, ids.stdout + ids.stderr)
+        self.assertIn("reason", ids.stderr)
+
+    def test_secret_entry_is_an_error(self):
+        head = self.commit({"gen/a.go": "clean\n"})
+        allow = self.allow_file("secret AKIAXXXX gen/*  # fake\n")
+        ids = self.run_scrub("identifiers", "--base", self.base, "--head", head,
+                             "--allow-file", allow)
+        self.assertEqual(ids.returncode, 2, ids.stdout + ids.stderr)
+
+    def test_checked_list_is_validated_but_never_applied(self):
+        head = self.commit({"gen/a.go": HOST_GEN + "\n"})
+        good = self.allow_file(f"fqdn {HOST_GEN} gen/*  # why\n")
+        ids = self.run_scrub("identifiers", "--base", self.base, "--head", head,
+                             "--check-allow-file", good)
+        self.assertEqual(ids.returncode, 1, ids.stdout + ids.stderr)
+        self.assertIn("gen/a.go:1", ids.stdout)
+        with open(good, "w") as fh:
+            fh.write(f"fqdn {HOST_GEN}\n")
+        ids = self.run_scrub("identifiers", "--base", self.base, "--head", head,
+                             "--check-allow-file", good)
+        self.assertEqual(ids.returncode, 2, ids.stdout + ids.stderr)
+
+    def test_an_entry_allows_its_own_value_on_its_own_line(self):
+        head = self.commit({".github/scrub-allow.txt":
+                            f"# the QEMU host, not {IP_172}\n"
+                            f"private-ip {IP_10} test/*  # the QEMU host\n"
+                            f"fqdn {HOST_GEN} gen/*  # docs, see {HOST_BAD}\n"
+                            f"# a comment naming {IP_192}\n"})
+        ids = self.run_scrub("identifiers", "--base", self.base, "--head", head)
+        self.assertEqual(ids.returncode, 1, ids.stdout + ids.stderr)
+        self.assertIn("3 finding(s), 2 allowed", ids.stdout)
+        self.assertIn("allowed by .github/scrub-allow.txt entry itself", ids.stdout)
+        for value in (IP_172, HOST_BAD, IP_192):
+            self.assertIn(": " + value, ids.stdout)
+
+    def test_generated_code_rule_comes_first_and_the_list_covers_the_rest(self):
+        header = "// Code generated by protoc-gen-x. DO NOT EDIT.\n\n"
+        head = self.commit({"gen/a.go": header + "// see " + HOST_GEN + "\nvar h = \"" + IP_10 + "\"\n"})
+        allow = self.allow_file(f"fqdn {HOST_GEN} gen/*  # why\nprivate-ip {IP_10} gen/*  # why\n")
+        ids = self.run_scrub("identifiers", "--base", self.base, "--head", head,
+                             "--allow-file", allow)
+        self.assertEqual(ids.returncode, 0, ids.stdout + ids.stderr)
+        self.assertIn("allowed by generated code: gen/a.go:3", ids.stdout)
+        self.assertIn("allowed by .github/scrub-allow.txt:2 (private-ip", ids.stdout)
+        self.assertNotIn(".github/scrub-allow.txt:1 (fqdn", ids.stdout)
+
+    def test_an_entry_in_another_file_allows_nothing(self):
+        head = self.commit({"docs/scrub-allow.txt": f"private-ip {IP_10} test/*  # why\n"})
+        ids = self.run_scrub("identifiers", "--base", self.base, "--head", head)
+        self.assertEqual(ids.returncode, 1, ids.stdout + ids.stderr)
+        self.assertNotIn("allowed by", ids.stdout)
+
+
 PNG_SIG = b"\x89PNG\r\n\x1a\n"
 C2PA_CHUNK = b"\x00\x00\x00\x18caBX\x00\x00\x00\x10jumb\x00\x00\x00\x08jumdc2pa\x00\x00\x00\x00"
 
