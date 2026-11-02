@@ -2,6 +2,7 @@
 """Scrub 1: generic identifier patterns and the DCO check.
 
   scrub.py identifiers [--base SHA] [--head REV] [--allow-domain DOMAIN ...]
+                       [--allow-file FILE [--allow-label LABEL]] [--check-allow-file FILE]
   scrub.py dco         [--base SHA] [--head REV]
 
 Without --base the whole history reachable from --head is scanned.
@@ -34,6 +35,14 @@ Allowed:
   - `scrub:allow=<class>[,<class>]` on a line of a file allows those classes on
     that line. It's never honoured in commit messages, author lines, paths or
     PR text, and a bare `scrub:allow` allows nothing;
+  - an entry of the repo's reviewed allowlist, `.github/scrub-allow.txt`, passed
+    with --allow-file as the caller read it from the base side of the change:
+    `<class> <exact value> <path glob>  # reason`, one exact value in the files
+    the glob matches, on file lines only (never messages, authors, paths, binary
+    string runs or PR text). A malformed list is an error (exit 2), and
+    --check-allow-file checks the PR's own copy without applying it. Secrets
+    can't be listed. A well-formed entry line in the list itself allows its own
+    value on that line;
   - private-ip only, in files under the top-level `docs/examples/`;
   - RFC 5737 and RFC 3849 documentation ranges (never matched); emails at
     example.com, example.org and example.net (and their subdomains) only; host
@@ -58,6 +67,7 @@ Exit status: 0 clean, 1 findings, 2 usage or git error.
 """
 
 import argparse
+import fnmatch
 import os
 import re
 import subprocess
@@ -171,6 +181,106 @@ class Finding:
 
 def docs_example_path(path):
     return path.startswith(DOCS_EXAMPLES)
+
+
+# The reviewed per-repo allowlist. Callers read it from the base side of a change (the PR
+# base, the commit before a push, the remote's default branch), never from the commits under
+# test, so an entry only counts once its own PR is merged. `ai-tell` entries are for the
+# local pre-push gate's AI-tell layer; this scanner accepts them and never uses them.
+ALLOW_FILE = ".github/scrub-allow.txt"
+ALLOW_FILE_CLASSES = CLASSES + ("ai-tell",)
+ALLOW_VALUE = re.compile(r"(?:[^%*?\[\]\s#]|%[0-9A-Fa-f]{2})+")
+ALLOW_GLOB = re.compile(r"[^\s#]+")
+
+
+@dataclass
+class AllowEntry:
+    cls: str
+    value: str
+    glob: str
+    line: int
+    written: str
+    label: str = ""
+
+
+def parse_allow_line(text):
+    """(class, value, glob, reason) for an entry line, None for a blank or comment line.
+
+    Raises ValueError for anything else. The value is percent-decoded (%20 for a space).
+    """
+    body, sep, reason = text.rstrip("\r").partition("#")
+    fields = body.split()
+    if not fields:
+        return None
+    if len(fields) != 3:
+        raise ValueError("want '<class> <value> <path glob>  # reason'")
+    cls, value, glob = fields
+    if cls == "secret":
+        raise ValueError("secrets can't be allowed here; put scrub:allow=secret on the line")
+    if cls not in ALLOW_FILE_CLASSES:
+        raise ValueError(f"unknown class '{cls}' (one of {', '.join(ALLOW_FILE_CLASSES)})")
+    if not ALLOW_VALUE.fullmatch(value):
+        raise ValueError("the value must be exact: no wildcards, and % only as a %XX escape")
+    if (not ALLOW_GLOB.fullmatch(glob) or glob.startswith("/") or ".." in glob.split("/")
+            or not re.search(r"[^*?/]", glob)):
+        raise ValueError("the path glob must be relative and name more than wildcards")
+    value = re.sub(r"%([0-9A-Fa-f]{2})", lambda m: chr(int(m.group(1), 16)), value)
+    return cls, value, glob, reason.strip() if sep else ""
+
+
+class AllowList:
+    """Entries of a reviewed allowlist file; each allows one exact value in matching paths."""
+
+    def __init__(self, entries=()):
+        self.entries = list(entries)
+
+    def match(self, cls, value, path):
+        for e in self.entries:
+            if e.cls == cls and e.value == value and fnmatch.fnmatchcase(path, e.glob):
+                return e
+        return None
+
+    def allow(self, f):
+        """Allow a finding on a file line (never a message, path or binary run) if listed."""
+        if f.allowed_by or not f.file or not f.line:
+            return False
+        e = self.match(f.cls, f.match, f.file)
+        if e:
+            f.allowed_by = e.label
+        return bool(e)
+
+
+def parse_allowlist(text, label=ALLOW_FILE):
+    """An AllowList from the file's text. Any malformed line raises ValueError naming it.
+
+    One entry per line, `<class> <value> <path glob>`, with a `# reason` on the same line or
+    on a comment line directly above it.
+    """
+    entries, reason_above = [], False
+    for n, raw in enumerate(text.split("\n"), 1):
+        stripped = raw.strip()
+        if stripped.startswith("#"):
+            reason_above = bool(stripped.lstrip("#").strip())
+            continue
+        try:
+            parsed = parse_allow_line(raw)
+        except ValueError as e:
+            raise ValueError(f"{label}:{n}: {e}")
+        if parsed is None:
+            reason_above = False
+            continue
+        cls, value, glob, reason = parsed
+        if not reason and not reason_above:
+            raise ValueError(f"{label}:{n}: needs a # reason on the line or the line above")
+        written = " ".join(raw.partition("#")[0].split())
+        entries.append(AllowEntry(cls, value, glob, n, written, f"{label}:{n} ({written})"))
+        reason_above = False
+    return AllowList(entries)
+
+
+def load_allowlist(path, label=ALLOW_FILE):
+    with open(path, encoding="utf-8") as fh:
+        return parse_allowlist(fh.read(), label)
 
 
 def is_code_selector(labels):
@@ -367,22 +477,49 @@ def added_lines(old_mode, old_sha, new_sha, data):
 class Collector:
     """Collects findings, dropping repeats of the same class and match in a file."""
 
-    def __init__(self, scanner):
+    def __init__(self, scanner, allowlist=None):
         self.scanner = scanner
+        self.allowlist = allowlist or AllowList()
         self.findings = []
         self.seen = set()
 
     def add(self, text, where, file="", line=0, generated=False, **kw):
         # CRLF content (PR bodies from GitHub, Windows files): drop the line's own \r.
-        for f in self.scanner.line(text.removesuffix("\r"), **kw):
-            if generated and f.cls == "fqdn" and not f.allowed_by:
-                f.allowed_by = "generated code"
+        text = text.removesuffix("\r")
+        found = self.scanner.line(text, **kw)
+        if generated:
+            for f in found:
+                if f.cls == "fqdn" and not f.allowed_by:
+                    f.allowed_by = "generated code"
+        if file and line and kw.get("honor_allow", True):
+            self.allow_listed(found, text, file, line)
+        for f in found:
             key = (file or where, f.cls, f.match, f.allowed_by)
             if key in self.seen:
                 continue
             self.seen.add(key)
             f.where, f.file, f.line = where, file, line
             self.findings.append(f)
+
+    def allow_listed(self, found, text, file, line):
+        """Apply the allowlist to findings on one file line.
+
+        A line of the allowlist file itself that is a well-formed entry also allows its own
+        value, for its own class, on that line: the entry is what the PR asks reviewers to
+        accept. Anything else on the line, its reason included, is still scanned.
+        """
+        own = None
+        if file == ALLOW_FILE:
+            try:
+                own = parse_allow_line(text)
+            except ValueError:
+                own = None
+        for f in found:
+            if f.allowed_by:
+                continue
+            f.file, f.line = file, line
+            if not self.allowlist.allow(f) and own and (f.cls, f.match) == own[:2]:
+                f.allowed_by = f"{ALLOW_FILE} entry itself"
 
     def changes(self, base, head, label):
         """Scan the paths and added content of every file changed from base to head."""
@@ -481,7 +618,14 @@ def report(check, findings, describe):
 
 def cmd_identifiers(args):
     domains = [d for item in args.allow_domain for d in item.split()]
-    col = Collector(Scanner(domains))
+    try:
+        if args.check_allow_file:
+            load_allowlist(args.check_allow_file, args.allow_label)
+        allowlist = load_allowlist(args.allow_file, args.allow_label) if args.allow_file else None
+    except (OSError, ValueError) as e:
+        print(f"scrub identifiers: allowlist: {e}", file=sys.stderr)
+        return 2
+    col = Collector(Scanner(domains), allowlist)
     empty_tree = git("hash-object", "-t", "tree", "/dev/null").strip()
     for sha in commits(args.base, args.head):
         parents = git("rev-list", "--parents", "-n1", sha).split()[1:]
@@ -558,6 +702,12 @@ def main(argv=None):
         if name == "identifiers":
             p.add_argument("--allow-domain", action="append", default=[],
                            help="extra allowed domain(s), space-separated; repeatable")
+            p.add_argument("--allow-file", default="",
+                           help=f"the reviewed allowlist ({ALLOW_FILE}) read from the base side")
+            p.add_argument("--check-allow-file", default="",
+                           help="an allowlist to check for errors without applying it")
+            p.add_argument("--allow-label", default=ALLOW_FILE,
+                           help="how warnings name the allowlist, e.g. its path at the base sha")
         else:
             p.add_argument("--exempt-file", default=DCO_EXEMPT,
                            help="the reviewed dco-exempt list (default: next to this script)")

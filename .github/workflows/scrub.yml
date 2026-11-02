@@ -32,7 +32,12 @@
 #     commit, except the reviewed default-branch commits in
 #     .github/scripts/dco-exempt.txt (full default-branch scans only).
 #
-# See .github/scripts/README.md for the allow markers and the limits.
+# The identifiers check also honours the repo's reviewed allowlist,
+# .github/scrub-allow.txt, read from the base side of the range (the PR or
+# merge group base, the commit before a push), never from the commits under
+# test. The PR's own copy is only checked for errors.
+#
+# See .github/scripts/README.md for the allow markers, the allowlist and the limits.
 # The patterns are generic. This workflow never reads a term list, and takes
 # no secrets.
 name: scrub
@@ -127,6 +132,19 @@ jobs:
               fi
               ;;
           esac
+          # The allowlist (.github/scrub-allow.txt) is read from the base side of the range,
+          # never from the commits under test, so an entry counts only once its own PR is
+          # merged: the PR or merge group base, the commit before a push, or the tip a
+          # scheduled or manual run checks out on the default branch. Otherwise none.
+          allow="$base"
+          case "$EVENT" in
+            push)
+              if [ -z "$allow" ] && is_commit "$PUSH_BEFORE"; then allow="$PUSH_BEFORE"; fi
+              ;;
+            schedule | workflow_dispatch)
+              if [ "$REF" = "refs/heads/$DEFAULT_BRANCH" ]; then allow="$head"; fi
+              ;;
+          esac
           if [ "$FULL" = "true" ]; then base=""; fi
           is_commit "$head" || no_range
           if [ -n "$base" ]; then echo "Scanning $base..$head"; else echo "Scanning the full history of $head"; fi
@@ -142,6 +160,7 @@ jobs:
             echo "base=$base"
             echo "head=$head"
             echo "default_branch_tip=$tip"
+            echo "allow_ref=$allow"
           } >> "$GITHUB_OUTPUT"
 
       - name: Install gitleaks
@@ -180,12 +199,26 @@ jobs:
         env:
           BASE: ${{ steps.range.outputs.base }}
           HEAD_SHA: ${{ steps.range.outputs.head }}
+          ALLOW_REF: ${{ steps.range.outputs.allow_ref }}
           ALLOWED_DOMAINS: ${{ inputs.allowed-domains }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
         run: |
+          file=.github/scrub-allow.txt
+          dir="$(mktemp -d)"
+          allow=()
+          if [ -n "$ALLOW_REF" ] && git cat-file -e "$ALLOW_REF:$file" 2>/dev/null; then
+            git show "$ALLOW_REF:$file" >"$dir/base.txt"
+            allow+=(--allow-file "$dir/base.txt" --allow-label "$file@${ALLOW_REF:0:12}")
+            echo "Allowlist: $file at $ALLOW_REF"
+          fi
+          # The copy under test is only checked for errors, never applied.
+          if git cat-file -e "$HEAD_SHA:$file" 2>/dev/null; then
+            git show "$HEAD_SHA:$file" >"$dir/head.txt"
+            allow+=(--check-allow-file "$dir/head.txt")
+          fi
           python3 "$TOOLS/.github/scripts/scrub.py" identifiers \
-            --base "$BASE" --head "$HEAD_SHA" --allow-domain "$ALLOWED_DOMAINS"
+            --base "$BASE" --head "$HEAD_SHA" --allow-domain "$ALLOWED_DOMAINS" "${allow[@]}"
 
       - name: DCO sign-off
         id: dco
