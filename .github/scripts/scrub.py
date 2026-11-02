@@ -45,7 +45,13 @@ Allowed:
     a length byte that fits the value, or \\xNN escapes, so go_package inside
     the file options message counts). After those bytes are stripped, the rest
     must be an allowed domain, so a private host name in a descriptor is still
-    flagged.
+    flagged;
+  - host names (fqdn only) in generated code: a text file whose leading
+    comments carry the standard `// Code generated ... DO NOT EDIT.` line, before
+    any code. Protobuf descriptors there can glue a message name, length bytes
+    and a package path into what reads as one host. Every other class is still
+    flagged in generated code, so a home path or address a generator embedded
+    still fails.
 Every honoured allow is printed as a warning.
 
 Exit status: 0 clean, 1 findings, 2 usage or git error.
@@ -133,6 +139,24 @@ ASSET_EXTENSIONS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".heic", 
 FONT_EXTENSIONS = (".ttf", ".otf", ".ttc", ".woff", ".woff2")
 PROVENANCE = re.compile(rb"c2pa|C2PA|caBX|jumb|contentauth")
 SIGNOFF = re.compile(r"^Signed-off-by: \S.* <[^<>\s]+@[^<>\s]+>\s*$", re.M)
+
+
+# Go's convention for generated files (also used by other generators): this exact
+# line among the leading comments, before the first line of code.
+GENERATED_HEADER = re.compile(r"^// Code generated .* DO NOT EDIT\.$")
+
+
+def is_generated(data):
+    """True when the file's leading comment lines include the generated-code header."""
+    for raw in data.decode("utf-8", "replace").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if not line.startswith("//"):
+            return False
+        if GENERATED_HEADER.match(line):
+            return True
+    return False
 
 
 @dataclass
@@ -348,9 +372,11 @@ class Collector:
         self.findings = []
         self.seen = set()
 
-    def add(self, text, where, file="", line=0, **kw):
+    def add(self, text, where, file="", line=0, generated=False, **kw):
         # CRLF content (PR bodies from GitHub, Windows files): drop the line's own \r.
         for f in self.scanner.line(text.removesuffix("\r"), **kw):
+            if generated and f.cls == "fqdn" and not f.allowed_by:
+                f.allowed_by = "generated code"
             key = (file or where, f.cls, f.match, f.allowed_by)
             if key in self.seen:
                 continue
@@ -384,9 +410,10 @@ class Collector:
                     self.add(run, f"{shown} (binary, {label})", path, binary=True,
                              honor_allow=False, docs_example=docs)
                 continue
+            generated = is_generated(data)
             for lineno, text in added_lines(old_mode, old_sha, new_sha, data):
                 self.add(text, f"{shown}:{lineno} ({label})", path, lineno,
-                         docs_example=docs)
+                         generated=generated, docs_example=docs)
 
     def provenance(self, path, where, marker):
         key = (path, "provenance", marker, "")
