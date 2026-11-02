@@ -42,6 +42,10 @@ Kubernetes or as a single-node appliance.
 - [sneakers-release](https://github.com/Sneakers-PAM/sneakers-release): the release manifest, with every service, k0s and third-party component pinned to one version.
 - [sneakers-appliance](https://github.com/Sneakers-PAM/sneakers-appliance): the appliance OS, a single-node k0s image with a closed shell, signed releases and two image slots.
 
+## 📈 Observability
+
+- [sneakers-metrics-traces](https://github.com/Sneakers-PAM/sneakers-metrics-traces): an OpenTelemetry Collector config, Grafana dashboards and a Docker Compose starter stack for the product's traces, metrics and logs, run beside the box.
+
 ## 📱 Mobile
 
 - [sneakers-android](https://github.com/Sneakers-PAM/sneakers-android): the Android app.
