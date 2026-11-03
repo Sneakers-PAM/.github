@@ -53,8 +53,7 @@ Kubernetes or as a single-node appliance.
 
 ## 🌐 Website
 
-- [docs](https://github.com/Sneakers-PAM/docs): the source of the system documentation.
-- [website](https://github.com/Sneakers-PAM/website): the source of the product site.
+- [website](https://github.com/Sneakers-PAM/website): the source of the product site and the documentation.
 
 ## 🤝 Contributing
 
