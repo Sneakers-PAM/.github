@@ -445,6 +445,45 @@ class EndToEndTest(unittest.TestCase):
         self.assertIn("home-path", ids.stdout)
         self.assertIn("private-ip", ids.stdout)
 
+    FUNDING = j("https://opencollective", ".com/", "example")
+
+    def test_host_names_in_lockfiles_are_warnings(self):
+        for name in ("package-lock.json", "pnpm-lock.yaml", "yarn.lock"):
+            self.commit(name, '  "funding": "' + self.FUNDING + '"\n  "x": "' + HOST_BAD + '"\n',
+                        "test: add " + name + SIGNOFF)
+        head = git(self.repo, "rev-parse", "HEAD")
+        ids = self.run_scrub("identifiers", "--base", self.base, "--head", head)
+        self.assertEqual(ids.returncode, 0, ids.stdout + ids.stderr)
+        self.assertIn("allowed by generated lockfile", ids.stdout)
+        self.assertIn("0 finding(s)", ids.stdout)
+
+    def test_lockfiles_in_a_subfolder_are_warnings(self):
+        os.makedirs(os.path.join(self.repo, "packages", "web"))
+        self.commit(os.path.join("packages", "web", "package-lock.json"), '"funding": "' + self.FUNDING + '"\n',
+                    "test: add a nested lockfile" + SIGNOFF)
+        head = git(self.repo, "rev-parse", "HEAD")
+        ids = self.run_scrub("identifiers", "--base", self.base, "--head", head)
+        self.assertEqual(ids.returncode, 0, ids.stdout + ids.stderr)
+        self.assertIn("allowed by generated lockfile", ids.stdout)
+
+    def test_lockfiles_still_fail_on_other_classes(self):
+        self.commit("package-lock.json", '"resolved": "' + j("/Us", "ers/jdoe/pkg.tgz") + '"\n"ip": "' + IP_10 + '"\n',
+                    "test: add a lockfile with a path" + SIGNOFF)
+        head = git(self.repo, "rev-parse", "HEAD")
+        ids = self.run_scrub("identifiers", "--base", self.base, "--head", head)
+        self.assertEqual(ids.returncode, 1, ids.stdout + ids.stderr)
+        self.assertIn("home-path", ids.stdout)
+        self.assertIn("private-ip", ids.stdout)
+
+    def test_lookalike_lockfile_names_are_scanned_in_full(self):
+        for name in ("package-lock.json.bak", "my-package-lock.json"):
+            self.commit(name, '"x": "' + HOST_BAD + '"\n', "test: add " + name + SIGNOFF)
+        head = git(self.repo, "rev-parse", "HEAD")
+        ids = self.run_scrub("identifiers", "--base", self.base, "--head", head)
+        self.assertEqual(ids.returncode, 1, ids.stdout + ids.stderr)
+        self.assertIn("package-lock.json.bak:1", ids.stdout)
+        self.assertIn("my-package-lock.json:1", ids.stdout)
+
     def test_gitattributes_cannot_hide_text(self):
         self.commit(".gitattributes", "* -diff\n", "chore: attrs" + SIGNOFF)
         self.commit("hosts.txt", "upstream " + HOST_BAD + "\n", "test: add" + SIGNOFF)

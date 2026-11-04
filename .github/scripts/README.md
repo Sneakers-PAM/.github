@@ -107,6 +107,9 @@ One entry per line, with a reason on the same line or on a comment line directly
   crosses `/`, so `gen/*.go` covers every Go file under `gen/`. A glob of only wildcards is refused.
 - **Generated code:** host names in files with the `// Code generated ... DO NOT EDIT.` header are
   already warnings, so they need no entry; the list covers every other class there.
+- **Lockfiles:** host names in `package-lock.json`, `pnpm-lock.yaml` and `yarn.lock` (exact file
+  name, any folder) are warnings too, since their funding and registry links are written by the
+  package manager. Every other class still fails there.
 - **Where it counts:** added lines of text files only. Never commit messages, authors, paths,
   binary string runs, tag text or PR title and body.
 - **Base side only:** `scrub.yml` reads the file at the PR or merge group base, at the commit before
