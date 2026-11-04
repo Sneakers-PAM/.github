@@ -60,7 +60,11 @@ Allowed:
     any code. Protobuf descriptors there can glue a message name, length bytes
     and a package path into what reads as one host. Every other class is still
     flagged in generated code, so a home path or address a generator embedded
-    still fails.
+    still fails;
+  - host names (fqdn only) in package manager lockfiles (package-lock.json,
+    pnpm-lock.yaml, yarn.lock, matched by exact file name at any depth): their
+    funding and registry links are package metadata the tool writes. Every other
+    class is still flagged there.
 Every honoured allow is printed as a warning.
 
 Exit status: 0 clean, 1 findings, 2 usage or git error.
@@ -154,6 +158,14 @@ SIGNOFF = re.compile(r"^Signed-off-by: \S.* <[^<>\s]+@[^<>\s]+>\s*$", re.M)
 # Go's convention for generated files (also used by other generators): this exact
 # line among the leading comments, before the first line of code.
 GENERATED_HEADER = re.compile(r"^// Code generated .* DO NOT EDIT\.$")
+
+
+LOCKFILES = ("package-lock.json", "pnpm-lock.yaml", "yarn.lock")
+
+
+def is_lockfile(path):
+    """True for a package manager's lockfile, at any depth, by its exact file name."""
+    return path.rsplit("/", 1)[-1] in LOCKFILES
 
 
 def is_generated(data):
@@ -488,9 +500,10 @@ class Collector:
         text = text.removesuffix("\r")
         found = self.scanner.line(text, **kw)
         if generated:
+            reason = generated if isinstance(generated, str) else "generated code"
             for f in found:
                 if f.cls == "fqdn" and not f.allowed_by:
-                    f.allowed_by = "generated code"
+                    f.allowed_by = reason
         if file and line and kw.get("honor_allow", True):
             self.allow_listed(found, text, file, line)
         for f in found:
@@ -547,7 +560,7 @@ class Collector:
                     self.add(run, f"{shown} (binary, {label})", path, binary=True,
                              honor_allow=False, docs_example=docs)
                 continue
-            generated = is_generated(data)
+            generated = "generated lockfile" if is_lockfile(path) else is_generated(data)
             for lineno, text in added_lines(old_mode, old_sha, new_sha, data):
                 self.add(text, f"{shown}:{lineno} ({label})", path, lineno,
                          generated=generated, docs_example=docs)
